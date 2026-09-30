@@ -1,0 +1,12 @@
+{
+  "developmentData": true,
+  "profileId": "professional-demo",
+  "profileName": "Professional (fictional demo)",
+  "version": 1,
+  "facts": [
+    { "key": "fullName", "label": "Full name", "type": "text", "value": "Avery Example", "source": "Fictional development fixture", "updatedAt": "2026-09-30" },
+    { "key": "email", "label": "Email", "type": "email", "value": "avery.example@example.test", "source": "Fictional development fixture", "updatedAt": "2026-09-30" },
+    { "key": "phone", "label": "Phone", "type": "tel", "value": "+1 555 010 2020", "source": "Fictional development fixture", "updatedAt": "2026-09-30" },
+    { "key": "college", "label": "College", "type": "text", "value": "Northstar Demo University", "source": "Fictional development fixture", "updatedAt": "2026-09-30" }
+  ]
+}

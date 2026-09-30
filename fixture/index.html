@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PLUMA Autofill development form</title>
+  <link rel="stylesheet" href="fixture.css">
+</head>
+<body>
+  <main>
+    <h1>Internship application demo</h1>
+    <p>This local fixture contains synthetic form data. It does not submit anywhere.</p>
+    <form>
+      <label>Full name <input name="full_name" autocomplete="name" placeholder="Your full name"></label>
+      <label>Email address <input type="email" name="email" autocomplete="email" value="existing@example.test"></label>
+      <label>Phone number <input type="tel" name="phone" autocomplete="tel"></label>
+      <label>College <input type="text" name="college"></label>
+      <label>Short introduction <textarea name="introduction" rows="3"></textarea></label>
+      <label>Password <input type="password" name="password"></label>
+      <label>One-time code <input type="text" name="otp" autocomplete="one-time-code"></label>
+      <input type="hidden" name="internal_id" value="fixture-only">
+      <label>Disabled example <input type="text" name="disabled_example" disabled value="Unavailable"></label>
+    </form>
+  </main>
+</body>
+</html>

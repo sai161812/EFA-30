@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PLUMA Autofill</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>PLUMA Autofill</h1>
+      <p class="tag">Development · scan only</p>
+    </header>
+    <p id="status" role="status" aria-live="polite">Ready to scan the active page.</p>
+    <button id="scan" type="button">Scan this page</button>
+    <section id="results" aria-live="polite" hidden>
+      <p id="summary"></p>
+      <ul id="fields"></ul>
+    </section>
+    <button id="settings" class="secondary" type="button">Open settings</button>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
