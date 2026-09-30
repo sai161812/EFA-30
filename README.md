@@ -1,60 +1,66 @@
-# PLUMA Autofill — Phase 1
+# PLUMA Autofill — Phase 2
 
-This repository contains a Chrome/Edge Manifest V3 extension and a local synthetic form fixture. It scans an authorized top-level HTTP/HTTPS page, proposes exact deterministic matches against a fictional profile, and fills only rows the user explicitly selects and approves. It never submits forms or clicks Next.
+This repository contains a Chrome/Edge Manifest V3 extension and local synthetic form fixtures. It scans an authorized top-level HTTP/HTTPS page, proposes exact deterministic matches against one explicitly selected POD-16 profile, and fills only rows the user selects and approves. It never submits forms or clicks Next. Offline development mode remains available with a visible fictional profile label.
 
 ## Load the extension in Chrome or Edge
 
 1. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked**.
-4. Select the repository root folder that contains `manifest.json` (for this checkout: `D:\Workspace\DEVEL\EFA-30`).
-5. Confirm the extension appears as **PLUMA Autofill (Development)**. Select its toolbar icon to open the popup.
+4. Select the repository root folder containing `manifest.json` (`D:\Workspace\DEVEL\EFA-30`).
+5. Confirm **PLUMA Autofill (Development)** appears and select its toolbar icon to open the popup.
 
-## Serve and scan the local fixture
+## Start POD-16 locally
 
-From PowerShell, run these commands in the repository root:
+The POD-16 checkout documents its local API at `http://127.0.0.1:8000`. From `D:\Workspace\DEVEL\POD-16`, start its Docker Compose stack; it applies Alembic migrations before serving. That checkout does not document a production API origin. This extension build requests permission for exactly `http://127.0.0.1:8000/*`.
+
+Create a POD-16 client API key using the bootstrap/admin credential. For fill-only access grant `autofill:profiles:read`. To create and edit approved facts also grant `autofill:profiles:manage`. Do not grant projects, tasks, notes or wildcard access. POD-16 returns the generated key once; enter it in extension Settings. The key stays in trusted extension session storage and must be entered again after browser restart.
+
+In **Settings**, connect to `http://127.0.0.1:8000`, sign in, create or select a personal, college or professional profile, and add approved facts. Phone and postal-code values stay text. Enter year-only graduation dates with year precision. Add custom keys, labels, aliases and source labels as needed. The extension reads profile data only through its service worker. Configured API failures, denied scopes and expired keys stop the scan; they never fall back to development data.
+
+POD-16 project import is not available in the inspected backend. Project snapshots can be entered manually in Settings after you have explicitly selected and approved their contents. Autofill never enumerates projects or notes.
+
+## Serve and scan the local form fixture
+
+From PowerShell, run in the repository root:
 
 ```powershell
 Set-Location 'D:\Workspace\DEVEL\EFA-30'
-py -m http.server 8000 --directory fixture
+py -m http.server 8001 --directory fixture
 ```
 
-Keep that terminal open. In Chrome or Edge, open `http://localhost:8000/`. Select the PLUMA Autofill toolbar icon, then **Scan this page**. The popup shows the exact origin, fictional profile, field label/context, suggested value, source, matching reason and status. Rows start unchecked; nothing is inserted until **Approve and fill selected** is clicked. The prefilled email's contents are never read back into the extension; the preview indicates only that it already has a value, and replacing it requires that row's separate overwrite checkbox.
+Keep the terminal open. In Chrome or Edge, open `http://localhost:8001/`, select the extension, then **Scan this page**. The popup shows the origin, selected profile and fact source, field label/context, value, matching reason and status. Rows start unchecked; nothing is inserted until **Approve and fill selected**. The prefilled email contents are not disclosed, and replacing it requires that field's separate overwrite approval.
 
-Stop the fixture server with `Ctrl+C` in the server terminal. If `py` is not available, use `python -m http.server 8000 --directory fixture`.
-
-## Development profile
-
-`extension/development/profile.js`, `development/fictional-profile.json` and the settings page contain clearly identified synthetic data. The service worker reads the active development profile. It is not a fallback for a failed personal-data API; no API integration exists in this phase.
+Stop the fixture server with `Ctrl+C`. If `py` is unavailable, run `python -m http.server 8001 --directory fixture`.
 
 ## Safety and pending previews
 
-- The extension asks only for `activeTab`, `scripting`, and `storage`; it has no all-sites permission. Script injection happens after the user opens the extension and starts a scan.
-- Pending profile data and approval choices live in `chrome.storage.session`, available only to trusted extension contexts, and expire after ten minutes. Cancel clears them. Popup closure does not cancel the preview.
-- The content script returns field descriptions and existing-value presence only. It receives selected values only in the final approved request for the recorded tab/document.
-- Hidden controls are not scanned. Password, OTP, payment/identity, signature, consent, upload, disabled, readonly, and other unsupported controls are excluded.
-- Changing field meaning, visibility, or page value after preview invalidates that field. Navigation to another document or origin prevents the fill. The extension never redirects approval to the currently active tab.
-- `extension/matching/matcher.js` is a pure exact-alias/autocomplete matcher. No fuzzy match, answer generation, or missing-fact inference is used.
-- Browser-internal pages such as `chrome://extensions` cannot be scanned; the popup shows a readable explanation.
-- Exact document targeting uses Chromium's `documentId` messaging API (Chrome 106+); use a current Chrome or Edge release.
+- The extension requests `activeTab`, `scripting`, `storage` and the single optional host pattern `http://127.0.0.1:8000/*`; it has no all-sites permission. A different deployment needs its exact origin declared in the manifest before reload.
+- Pending profile data and approval choices live in `chrome.storage.session`, available only to trusted extension contexts, and expire after ten minutes. Cancel/fill completion clears the preview. Browser restart clears the session and requires sign-in again.
+- API keys never enter local/sync storage, page messages or content scripts. The service worker has fixed profile-only routes; the content script cannot request profile data or approve a fill.
+- Profile data is re-read from POD-16 before scanning and revalidated by version immediately before filling. API outage, expired authentication or version change clears the preview and requires a fresh session/review.
+- The content script returns field descriptors and existing-value presence only. It receives selected values only in the final approved request for the recorded tab/document.
+- Hidden controls are not scanned. Password, OTP, payment/identity, signature, consent, upload, disabled and readonly controls are excluded. Existing values need explicit per-field overwrite approval.
+- `extension/matching/matcher.js` is a pure exact-alias/autocomplete matcher. It does not fuzzy-match, generate answers or infer missing facts.
+- Browser-internal pages such as `chrome://extensions` cannot be scanned; the popup shows a readable explanation. Exact document targeting uses Chromium `documentId` messaging (Chrome 106+).
 
 ## Checks and browser walkthrough
 
-Run pure matcher, service-worker routing, and content-script behavior tests from the repository root:
+Run the extension behavior and API client checks from the repository root:
 
 ```powershell
 npm test
 ```
 
-For browser verification:
+For browser and live API verification:
 
-1. Load the unpacked extension and confirm it is enabled without a manifest or service-worker error.
-2. Start the fixture server and scan `http://localhost:8000/`.
-3. Confirm the prefilled email value itself is not displayed. Leave the row unchecked and click **Approve and fill selected**; confirm no fields are written.
-4. Select **Full name**, then approve. Confirm only the selected field is filled. Select the prefilled email without its overwrite checkbox; confirm it is skipped and preserved. Repeat with the explicit overwrite checkbox and confirm the fill is reported.
-5. Scan `http://localhost:8000/react-controlled.html` with an internet connection so its test-only React 18 scripts can load from unpkg. Approve Email, blur the field, and activate **Read React state**; confirm React kept the value.
-6. While a preview is open, edit a page field or navigate to another origin. Approve and confirm the edited field is skipped or the old target is rejected; no value is sent to the new page.
-7. Cancel a preview, reopen the popup, and confirm no pending preview remains. Scan again, close the popup, reopen it on the same target, and confirm the preview is restored until its expiry.
-8. Open `chrome://extensions/` and scan. Confirm a readable restricted-page error appears. Confirm OTP, password, disabled and other unsupported visible controls remain excluded.
+1. Load unpacked and confirm there are no manifest or service-worker errors.
+2. Start POD-16, create a synthetic profile client with only `autofill:profiles:read`, and connect in extension Settings to `http://127.0.0.1:8000`. Create profiles and add synthetic facts with both read and manage scopes.
+3. Start the fixture on port 8001, scan `http://localhost:8001/`, and check that the selected POD-16 fact, source and match reason appear. Disconnect POD-16 and rescan; confirm an API error and no fictional fallback.
+4. Leave all fields unchecked and approve; confirm nothing is written. Select one field and approve it. Confirm the prefilled email is skipped until its overwrite checkbox is separately selected.
+5. With a second API client, change the selected profile after preview and approve. Confirm the old preview is rejected. Try reading projects, notes and `/v1/profile` with the read-only profile key; each must be denied.
+6. Sign out, restart the browser, and test an expired/revoked API key. Each requires fresh sign-in and blocks filling.
+7. Scan `http://localhost:8001/react-controlled.html`; approve Email, blur it, then activate **Read React state** and check the retained controlled value.
+8. Edit a page field or navigate while a preview is open; approve and confirm the changed target/field is rejected. Cancel a preview, reopen the popup, and confirm no pending preview remains.
 
-The React fixture is separate from the extension UI and requires network access only to load React in that local test page.
+Automated extension checks pass. Backend HTTP integration tests are included but need an available isolated POD-16 PostgreSQL test database. Browser UI and live POD-16 testing were not available in this environment; use the steps above for those checks. The React fixture is separate from the extension UI and loads React only for its controlled-form test.

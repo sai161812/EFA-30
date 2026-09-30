@@ -75,7 +75,8 @@ async function cancelPreview() {
 function renderPreview(data) {
   currentPreview = data;
   document.querySelector("#origin").textContent = data.target.origin;
-  document.querySelector("#profile").textContent = `${data.profile.name} (version ${data.profile.version})`;
+  const source = data.profile.source === "pod16" ? "POD-16 approved facts" : "fictional development data";
+  document.querySelector("#profile").textContent = `${data.profile.name} (version ${data.profile.version}; ${source})`;
   document.querySelector("#expiry").textContent = `This preview expires ${new Date(data.expiresAt).toLocaleTimeString()}.`;
   document.querySelector("#summary").textContent = `${data.counts.eligible} eligible of ${data.counts.total} visible controls. Nothing is written until you approve.`;
   rows.replaceChildren(...data.rows.map((row) => createRow(row, data.profile)));

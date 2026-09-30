@@ -8,7 +8,16 @@ export const MESSAGE = Object.freeze({
   SCAN_RESULT: "pluma/scan-result",
   FILL_APPROVED: "pluma/fill-approved",
   FILL_RESULT: "pluma/fill-result",
-  WORKFLOW_ERROR: "pluma/workflow-error"
+  WORKFLOW_ERROR: "pluma/workflow-error",
+  API_LOGIN: "pluma/api-login",
+  API_CONFIGURE: "pluma/api-configure",
+  API_SELECT_PROFILE: "pluma/api-select-profile",
+  API_LOGOUT: "pluma/api-logout",
+  API_STATUS: "pluma/api-status",
+  API_LIST_PROFILES: "pluma/api-list-profiles",
+  API_READ_PROFILE: "pluma/api-read-profile",
+  API_CREATE_PROFILE: "pluma/api-create-profile",
+  API_UPDATE_PROFILE: "pluma/api-update-profile"
 });
 
 /**

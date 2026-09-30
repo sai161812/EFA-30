@@ -9,18 +9,48 @@
 <body>
   <main>
     <h1>Settings</h1>
-    <p class="notice"><strong>Development data:</strong> fictional profile only. The extension does not connect to PLUMA or another profile service.</p>
-    <h2>Selected profile: Professional Demo</h2>
-    <p><strong>Name:</strong> Avery Example</p>
-    <p><strong>Email:</strong> avery.example@example.test</p>
-    <p><strong>Preferred username:</strong> averyx</p>
-    <p><strong>Phone:</strong> +1 555 010 2020</p>
-    <p><strong>College:</strong> Northstar Demo University</p>
-    <p><strong>Degree:</strong> BSc Computer Science</p>
-    <p><strong>Graduation year:</strong> 2027</p>
-    <p><strong>GitHub:</strong> https://github.com/avery-example</p>
-    <p><strong>Portfolio:</strong> https://avery-example.example.test</p>
-    <p class="muted">Preview edits are for one fill only. The selected profile is bundled fictional data and cannot be edited here.</p>
+    <p id="status" role="status" aria-live="polite">Loading profile settings…</p>
+    <section aria-labelledby="connection-heading">
+      <h2 id="connection-heading">POD-16 connection</h2>
+      <label for="api-origin">API origin</label>
+      <input id="api-origin" type="url" autocomplete="url" value="http://127.0.0.1:8000" required>
+      <p class="muted">This build allows the exact local development origin http://127.0.0.1:8000. The POD-16 checkout does not document a production address.</p>
+      <label for="api-key">POD-16 API key</label>
+      <input id="api-key" type="password" autocomplete="off" spellcheck="false">
+      <div class="actions">
+        <button id="connect" type="button">Connect and sign in</button>
+        <button id="logout" class="secondary" type="button">Sign out and clear session</button>
+      </div>
+      <p id="auth-state" class="muted"></p>
+    </section>
+    <section aria-labelledby="profiles-heading">
+      <h2 id="profiles-heading">Profiles</h2>
+      <label for="profile-select">Profile used for scans</label>
+      <select id="profile-select"><option value="">Connect to load profiles</option></select>
+      <button id="select-profile" class="secondary" type="button">Use selected profile</button>
+      <div class="actions">
+        <label for="new-profile-type">Create profile</label>
+        <select id="new-profile-type">
+          <option value="personal">Personal</option><option value="college">College</option><option value="professional">Professional</option>
+        </select>
+        <input id="new-profile-name" maxlength="120" aria-label="New profile name" placeholder="Profile name">
+        <button id="create-profile" class="secondary" type="button">Create</button>
+      </div>
+      <div id="profile-editor" hidden>
+        <h3 id="editor-title"></h3>
+        <label for="profile-name">Profile name</label>
+        <input id="profile-name" maxlength="120">
+        <p class="muted">Facts are saved only to the selected POD-16 profile. Phone numbers and postal codes remain text. Dates keep their stated precision.</p>
+        <p class="notice">Project import from POD-16 is not available. You can add a project snapshot manually only after you have approved its contents.</p>
+        <div id="fact-list" class="facts"></div>
+        <div class="actions"><button id="add-fact" class="secondary" type="button">Add fact</button><button id="save-profile" type="button">Save profile changes</button></div>
+      </div>
+    </section>
+    <section aria-labelledby="offline-heading">
+      <h2 id="offline-heading">Offline development data</h2>
+      <p class="notice"><strong>Development data:</strong> when no API origin is configured, scans use the fictional Professional Demo profile. Configuring POD-16 disables this data completely, including when the API is unavailable.</p>
+    </section>
   </main>
+  <script type="module" src="settings.js"></script>
 </body>
 </html>

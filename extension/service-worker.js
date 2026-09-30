@@ -1,17 +1,22 @@
 import { isMessageType, isObject, MESSAGE } from "./shared/contracts.js";
 import { matchField, MATCH_STATUS } from "./matching/matcher.js";
 import { DEVELOPMENT_PROFILE } from "./development/profile.js";
+import { normalizeApiOrigin, requestProfileApi, validateProfile, validateProfileSummaryList } from "./profile-api.js";
 
 const EXTENSION_ORIGIN = `chrome-extension://${chrome.runtime.id}/`;
 const SESSION_KEY = "pendingPreview";
 const PREVIEW_TTL_MS = 10 * 60 * 1000;
+const API_SETTINGS_KEY = "profileApiSettings";
+const API_TOKEN_KEY = "profileApiToken";
 const sessionReady = chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 let activeFillToken = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !Object.values(MESSAGE).includes(message.type) || message.type === MESSAGE.SCAN_PAGE || message.type === MESSAGE.FILL_APPROVED) return false;
-  if (!isTrustedPopup(sender)) {
-    sendResponse({ type: MESSAGE.WORKFLOW_ERROR, error: "Only the extension popup can manage a preview or approve a fill." });
+  const apiMessage = [MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
+    MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE].includes(message.type);
+  if (apiMessage ? !isTrustedSettings(sender) : !isTrustedPopup(sender)) {
+    sendResponse({ type: MESSAGE.WORKFLOW_ERROR, error: "This extension action came from an untrusted page." });
     return false;
   }
   dispatch(message).then(sendResponse).catch((error) => sendResponse({ type: MESSAGE.WORKFLOW_ERROR, error: readableError(error) }));
@@ -23,8 +28,149 @@ function isTrustedPopup(sender) {
     sender.url.endsWith("/extension/popup.html") && sender.tab === undefined;
 }
 
+function isTrustedSettings(sender) {
+  return sender.id === chrome.runtime.id && typeof sender.url === "string" && sender.url.startsWith(EXTENSION_ORIGIN) &&
+    sender.url.endsWith("/extension/settings.html");
+}
+
+async function dispatchProfileApi(message) {
+  validateSettingsMessage(message);
+  const local = await chrome.storage.local.get(API_SETTINGS_KEY);
+  const settings = local[API_SETTINGS_KEY] || { origin: "", selectedProfileId: "" };
+  const session = await chrome.storage.session.get(API_TOKEN_KEY);
+  const token = session[API_TOKEN_KEY];
+  if (message.type === MESSAGE.API_STATUS) return { type: MESSAGE.API_STATUS, origin: settings.origin, selectedProfileId: settings.selectedProfileId, authenticated: Boolean(token) };
+  if (message.type === MESSAGE.API_CONFIGURE) {
+    const origin = normalizeApiOrigin(message.origin);
+    const permission = await chrome.permissions.contains({ origins: [`${origin}/*`] });
+    if (!permission) throw new Error("This API origin is not included in this extension build. Add its exact origin permission and reload the extension.");
+    if (settings.origin && settings.origin !== origin) await chrome.storage.session.remove([API_TOKEN_KEY, SESSION_KEY]);
+    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" } });
+    return { type: MESSAGE.API_CONFIGURE, origin };
+  }
+  if (message.type === MESSAGE.API_SELECT_PROFILE) {
+    if (!settings.origin || !token) throw new Error("Sign in to POD-16 before selecting a profile.");
+    const profileId = validProfileId(message.profileId);
+    await fetchProfileApi({ origin: settings.origin, token, path: `/${profileId}` });
+    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, selectedProfileId: profileId } });
+    await clearPending();
+    return { type: MESSAGE.API_SELECT_PROFILE, profileId };
+  }
+  if (message.type === MESSAGE.API_LOGIN) {
+    const origin = normalizeApiOrigin(message.origin || settings.origin);
+    if (typeof message.token !== "string" || message.token.length < 8 || message.token.length > 4096) throw new Error("Enter a valid POD-16 API key.");
+    const permission = await chrome.permissions.contains({ origins: [`${origin}/*`] });
+    if (!permission) throw new Error("Grant this exact API origin in the settings page before signing in.");
+    const response = await fetchProfileApi({ origin, token: message.token });
+    validateProfileSummaryList(response);
+    await chrome.storage.session.set({ [API_TOKEN_KEY]: message.token });
+    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" } });
+    await clearPending();
+    return { type: MESSAGE.API_LOGIN, origin, authenticated: true, profiles: response.data };
+  }
+  if (message.type === MESSAGE.API_LOGOUT) {
+    await chrome.storage.session.remove([API_TOKEN_KEY, SESSION_KEY]);
+    return { type: MESSAGE.API_LOGOUT, authenticated: false };
+  }
+  if (!settings.origin || !token) throw new Error("Connect to POD-16 and sign in from Settings. No development profile is used when API access is configured.");
+  if (message.type === MESSAGE.API_LIST_PROFILES) {
+    return { type: MESSAGE.API_LIST_PROFILES, profiles: validateProfileSummaryList(await fetchProfileApi({ origin: settings.origin, token })) };
+  }
+  if (message.type === MESSAGE.API_READ_PROFILE) {
+    const id = validProfileId(message.profileId);
+    return { type: MESSAGE.API_READ_PROFILE, profile: validateProfile(await fetchProfileApi({ origin: settings.origin, token, path: `/${id}` })) };
+  }
+  if (message.type === MESSAGE.API_CREATE_PROFILE) {
+    validateProfileWrite(message.profile, true);
+    const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token, method: "POST", body: message.profile }));
+    await clearPending();
+    return { type: MESSAGE.API_CREATE_PROFILE, profile };
+  }
+  if (message.type === MESSAGE.API_UPDATE_PROFILE) {
+    const id = validProfileId(message.profileId);
+    validateProfileWrite(message.profile, false);
+    const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token, path: `/${id}`, method: "PATCH", body: message.profile }));
+    await clearPending();
+    return { type: MESSAGE.API_UPDATE_PROFILE, profile };
+  }
+  throw new Error("Unsupported profile action.");
+}
+
+function validateSettingsMessage(message) {
+  const allowed = {
+    [MESSAGE.API_STATUS]: ["type"],
+    [MESSAGE.API_LOGOUT]: ["type"],
+    [MESSAGE.API_LIST_PROFILES]: ["type"],
+    [MESSAGE.API_CONFIGURE]: ["type", "origin"],
+    [MESSAGE.API_LOGIN]: ["type", "origin", "token"],
+    [MESSAGE.API_SELECT_PROFILE]: ["type", "profileId"],
+    [MESSAGE.API_READ_PROFILE]: ["type", "profileId"],
+    [MESSAGE.API_CREATE_PROFILE]: ["type", "profile"],
+    [MESSAGE.API_UPDATE_PROFILE]: ["type", "profileId", "profile"]
+  }[message.type];
+  if (!allowed || Object.keys(message).some((key) => !allowed.includes(key))) throw new Error("The profile settings message was invalid.");
+}
+
+function validateProfileWrite(profile, creating) {
+  const allowed = creating ? ["profile_type", "name", "facts"] : ["expected_version", "name", "facts"];
+  if (!isObject(profile) || Object.keys(profile).some((key) => !allowed.includes(key)) ||
+      (creating && !["personal", "college", "professional"].includes(profile.profile_type)) ||
+      (!creating && (!Number.isInteger(profile.expected_version) || profile.expected_version < 1)) ||
+      typeof profile.name !== "string" || !profile.name.trim() || profile.name.length > 120 ||
+      !Array.isArray(profile.facts) || profile.facts.length > 250) throw new Error("The profile edit was invalid.");
+  const factKeys = new Set();
+  for (const fact of profile.facts) {
+    const fields = ["key", "label", "fact_type", "value", "source", "aliases", "date_precision"];
+    if (!isObject(fact) || Object.keys(fact).some((key) => !fields.includes(key)) ||
+        typeof fact.key !== "string" || !/^[a-zA-Z0-9_.-]{1,80}$/.test(fact.key) || factKeys.has(fact.key) ||
+        typeof fact.label !== "string" || !fact.label.trim() || fact.label.length > 120 ||
+        !["text", "email", "phone", "postal_code", "url", "year", "date", "skills", "project_snapshot"].includes(fact.fact_type) ||
+        typeof fact.value !== "string" || fact.value.length > 12000 ||
+        typeof fact.source !== "string" || !fact.source.trim() || fact.source.length > 160 ||
+        !Array.isArray(fact.aliases) || fact.aliases.length > 20 || fact.aliases.some((item) => typeof item !== "string" || !item.trim() || item.length > 80) ||
+        !(fact.date_precision === null || fact.date_precision === undefined || ["year", "month", "day"].includes(fact.date_precision))) {
+      throw new Error("A profile fact edit was invalid.");
+    }
+    factKeys.add(fact.key);
+  }
+}
+
+function validProfileId(value) {
+  if (typeof value !== "string" || !/^[0-9a-f-]{36}$/i.test(value)) throw new Error("Choose a valid profile first.");
+  return value;
+}
+
+async function getSelectedProfile() {
+  const local = await chrome.storage.local.get(API_SETTINGS_KEY);
+  const settings = local[API_SETTINGS_KEY];
+  if (!settings?.origin) return { ...DEVELOPMENT_PROFILE, profileSource: "development" };
+  const session = await chrome.storage.session.get(API_TOKEN_KEY);
+  if (!session[API_TOKEN_KEY]) throw new Error("POD-16 requires sign-in after browser restart. Open Settings and authenticate again.");
+  if (!settings.selectedProfileId) throw new Error("Select a POD-16 profile in Settings before scanning.");
+  try {
+    const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token: session[API_TOKEN_KEY], path: `/${validProfileId(settings.selectedProfileId)}` }));
+    return { ...profile, profileSource: "pod16" };
+  } catch (error) {
+    await clearPending();
+    if (/session expired|key was rejected/i.test(String(error?.message))) await chrome.storage.session.remove(API_TOKEN_KEY);
+    throw error;
+  }
+}
+
+async function fetchProfileApi(options) {
+  try { return await requestProfileApi(options); }
+  catch (error) {
+    if (/session expired|key was rejected/i.test(String(error?.message))) {
+      await chrome.storage.session.remove([API_TOKEN_KEY, SESSION_KEY]);
+    }
+    throw error;
+  }
+}
+
 async function dispatch(message) {
   await sessionReady;
+  if ([MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
+    MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE].includes(message.type)) return dispatchProfileApi(message);
   if (message.type === MESSAGE.SCAN_ACTIVE_TAB) return scanActiveTab();
   if (message.type === MESSAGE.GET_PREVIEW) return previewResponse(await loadPending());
   if (message.type === MESSAGE.UPDATE_PREVIEW) return updatePreview(message);
@@ -40,6 +186,7 @@ async function scanActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id || !tab.url) throw new Error("No active page is available to scan.");
   if (!/^https?:\/\//i.test(tab.url)) throw new Error("This browser page is restricted. Open a regular HTTP or HTTPS page.");
+  const profile = await getSelectedProfile();
   const injected = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: false }, files: ["extension/content/content-script.js"] });
   const topDocument = injected.find((item) => item.frameId === 0);
   if (!topDocument?.documentId) throw new Error("The page document could not be identified. Refresh and try again.");
@@ -51,10 +198,11 @@ async function scanActiveTab() {
   const pending = {
     version: 1, token: crypto.randomUUID(), createdAt: now, expiresAt: now + PREVIEW_TTL_MS,
     tabId: tab.id, documentId: topDocument.documentId, origin: new URL(tab.url).origin,
-    profileId: DEVELOPMENT_PROFILE.id, profileVersion: DEVELOPMENT_PROFILE.version,
-    profileName: DEVELOPMENT_PROFILE.name, facts: DEVELOPMENT_PROFILE.facts, fields,
+    profileId: profile.id, profileVersion: profile.version, profileSource: profile.profileSource,
+    profileName: profile.name, profileOrigin: profile.profileSource === "pod16" ? (await chrome.storage.local.get(API_SETTINGS_KEY))[API_SETTINGS_KEY].origin : null,
+    facts: profile.facts, fields,
     rows: fields.map((field) => {
-      const suggestion = matchField(field, DEVELOPMENT_PROFILE.facts);
+      const suggestion = matchField(field, profile.facts);
       return { fieldId: field.id, profileKey: suggestion.profileKey, suggestionKey: suggestion.profileKey,
         suggestionStatus: suggestion.status, suggestionReason: suggestion.reason, mappingChanged: false,
         valueOverride: null, include: false, overwrite: false };
@@ -98,7 +246,7 @@ function previewResponse(pending) {
   return {
     type: MESSAGE.GET_PREVIEW, pending: true,
     target: { tabId: pending.tabId, origin: pending.origin, documentId: pending.documentId },
-    profile: { id: pending.profileId, name: pending.profileName, version: pending.profileVersion },
+    profile: { id: pending.profileId, name: pending.profileName, version: pending.profileVersion, source: pending.profileSource },
     factOptions: pending.facts.map(({ key, label }) => ({ key, label })),
     expiresAt: pending.expiresAt, filling: Boolean(pending.filling),
     rows: pending.rows.map((row) => previewRow(row, pending.fields.find((field) => field.id === row.fieldId), pending.facts)),
@@ -136,7 +284,18 @@ function previewRow(row, field, facts) {
 async function approveAndFill() {
   const pending = await loadPending();
   if (!pending) throw new Error("This preview expired. Scan the page again before filling.");
-  if (pending.profileVersion !== DEVELOPMENT_PROFILE.version) {
+  if (pending.profileSource === "pod16") {
+    const session = await chrome.storage.session.get(API_TOKEN_KEY);
+    if (!session[API_TOKEN_KEY]) { await clearPending(); throw new Error("POD-16 requires sign-in again. This preview was cleared."); }
+    try {
+      const current = validateProfile(await fetchProfileApi({ origin: pending.profileOrigin, token: session[API_TOKEN_KEY], path: `/${validProfileId(pending.profileId)}` }));
+      if (current.version !== pending.profileVersion) { await clearPending(); throw new Error("The POD-16 profile changed after preview. Scan again to review current facts."); }
+    } catch (error) {
+      await clearPending();
+      if (/session expired|key was rejected/i.test(String(error?.message))) await chrome.storage.session.remove(API_TOKEN_KEY);
+      throw error;
+    }
+  } else if (pending.profileVersion !== DEVELOPMENT_PROFILE.version) {
     await clearPending();
     throw new Error("The profile changed after preview. Scan the page again to review current facts.");
   }
@@ -150,6 +309,7 @@ async function approveAndFill() {
     const view = previewRow(row, field, pending.facts);
     if (!field?.eligible) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "Unsupported field." });
     else if (!view.value) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "No value is available. Choose a fact or enter a per-fill value." });
+    else if (view.value.length > 4000) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "This value is too long for a supported form field." });
     else if (field.hasValue && !row.overwrite) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "This field already has a value. Approve overwrite for this field to replace it." });
     else valid.push({ fieldId: row.fieldId, value: view.value, overwrite: row.overwrite, expected: field });
   }

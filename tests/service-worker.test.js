@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 const popupSender = { id: "extension-test", url: "chrome-extension://extension-test/extension/popup.html" };
+const settingsSender = { id: "extension-test", url: "chrome-extension://extension-test/extension/settings.html" };
 
 function makeRuntime() {
   const stored = {};
@@ -16,12 +17,16 @@ function makeRuntime() {
   };
   globalThis.chrome = {
     runtime: { id: "extension-test", onMessage: { addListener(callback) { onMessage = callback; } } },
-    storage: { session: {
+    storage: { local: {
+      async get(key) { return { [key]: stored[`local:${key}`] }; },
+      async set(record) { for (const [key, value] of Object.entries(record)) stored[`local:${key}`] = value; }
+    }, session: {
       async setAccessLevel({ accessLevel }) { assert.equal(accessLevel, "TRUSTED_CONTEXTS"); },
       async get(key) { return { [key]: stored[key] }; },
       async set(record) { Object.assign(stored, record); },
-      async remove(key) { delete stored[key]; }
+      async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete stored[key]; }
     } },
+    permissions: { async contains({ origins }) { return origins.length === 1 && origins[0] === "http://127.0.0.1:8000/*"; } },
     tabs: {
       async query() { calls.query += 1; return [activeTab]; },
       async get(tabId) { assert.equal(tabId, 7); return activeTab; },
@@ -129,6 +134,88 @@ test("content-originated requests cannot start or approve a fill", async () => {
   const result = await send(runtime, { type: "pluma/scan-active-tab" }, { id: "extension-test", url: "https://form.example/", tab: { id: 7 } });
   assert.equal(result.type, "pluma/workflow-error");
   assert.equal(runtime.calls.inject, 0);
+});
+
+test("profile API credentials stay in trusted session state and API outage never falls back to fiction", async () => {
+  const runtime = makeRuntime();
+  const originalFetch = globalThis.fetch;
+  const profileId = "123e4567-e89b-12d3-a456-426614174000";
+  globalThis.fetch = async (url) => new Response(JSON.stringify(url.endsWith("/profiles") ? {
+    data: [{ id: profileId, profile_type: "personal", name: "Synthetic profile", version: 4, updated_at: "2026-10-01T00:00:00Z" }]
+  } : {
+    id: profileId, profile_type: "personal", name: "Synthetic profile", version: 4,
+    facts: [{ key: "email", label: "Email", fact_type: "email", value: "synthetic@example.test", source: "Synthetic test", aliases: ["email address"], date_precision: null, updated_at: "2026-10-01T00:00:00Z" }]
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  try {
+    await loadWorker(runtime, "profile-api-test");
+    const configured = await send(runtime, { type: "pluma/api-configure", origin: "http://127.0.0.1:8000" }, settingsSender);
+    assert.equal(configured.origin, "http://127.0.0.1:8000");
+    const apiKey = crypto.randomUUID();
+    await send(runtime, { type: "pluma/api-login", origin: "http://127.0.0.1:8000", token: apiKey }, settingsSender);
+    assert.equal(runtime.stored.profileApiToken, apiKey);
+    assert.equal(runtime.stored["local:profileApiSettings"].origin, "http://127.0.0.1:8000");
+    await send(runtime, { type: "pluma/api-select-profile", profileId }, settingsSender);
+    const injectsBeforeOutage = runtime.calls.inject;
+    globalThis.fetch = async () => { throw new TypeError("network unavailable"); };
+    const failedScan = await send(runtime, { type: "pluma/scan-active-tab" });
+    assert.equal(failedScan.type, "pluma/workflow-error");
+    assert.match(failedScan.error, /Could not reach POD-16/);
+    assert.equal(runtime.calls.inject, injectsBeforeOutage, "an unavailable API must not inject the fictional profile");
+    const denied = await send(runtime, { type: "pluma/api-read-profile", profileId }, { id: "extension-test", url: "https://form.example/", tab: { id: 7 } });
+    assert.equal(denied.type, "pluma/workflow-error");
+    assert.equal(runtime.stored.pendingPreview, undefined);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("a profile version change after preview invalidates approval before page access", async () => {
+  const runtime = makeRuntime();
+  const originalFetch = globalThis.fetch;
+  const profileId = "123e4567-e89b-12d3-a456-426614174000";
+  let version = 4;
+  globalThis.fetch = async (url) => new Response(JSON.stringify(url.endsWith("/profiles") ? {
+    data: [{ id: profileId, profile_type: "personal", name: "Synthetic profile", version, updated_at: "2026-10-01T00:00:00Z" }]
+  } : {
+    id: profileId, profile_type: "personal", name: "Synthetic profile", version,
+    facts: [{ key: "email", label: "Email", fact_type: "email", value: "synthetic@example.test", source: "Synthetic test", aliases: [], date_precision: null, updated_at: "2026-10-01T00:00:00Z" }]
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  try {
+    await loadWorker(runtime, "profile-version-change");
+    await send(runtime, { type: "pluma/api-configure", origin: "http://127.0.0.1:8000" }, settingsSender);
+    await send(runtime, { type: "pluma/api-login", origin: "http://127.0.0.1:8000", token: crypto.randomUUID() }, settingsSender);
+    await send(runtime, { type: "pluma/api-select-profile", profileId }, settingsSender);
+    const preview = await send(runtime, { type: "pluma/scan-active-tab" });
+    assert.equal(preview.profile.source, "pod16");
+    version = 5;
+    const result = await send(runtime, { type: "pluma/approve-and-fill" });
+    assert.equal(result.type, "pluma/workflow-error");
+    assert.match(result.error, /profile changed after preview/);
+    assert.equal(runtime.calls.fills, 0);
+    assert.equal(runtime.stored.pendingPreview, undefined);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("an expired POD-16 key clears its trusted session and blocks page injection", async () => {
+  const runtime = makeRuntime();
+  const originalFetch = globalThis.fetch;
+  const profileId = "123e4567-e89b-12d3-a456-426614174000";
+  globalThis.fetch = async (url) => new Response(JSON.stringify(url.endsWith("/profiles") ? {
+    data: [{ id: profileId, profile_type: "personal", name: "Synthetic profile", version: 1, updated_at: "2026-10-01T00:00:00Z" }]
+  } : {
+    id: profileId, profile_type: "personal", name: "Synthetic profile", version: 1, facts: []
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  try {
+    await loadWorker(runtime, "expired-profile-key");
+    await send(runtime, { type: "pluma/api-configure", origin: "http://127.0.0.1:8000" }, settingsSender);
+    await send(runtime, { type: "pluma/api-login", origin: "http://127.0.0.1:8000", token: crypto.randomUUID() }, settingsSender);
+    await send(runtime, { type: "pluma/api-select-profile", profileId }, settingsSender);
+    const injects = runtime.calls.inject;
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: "Expired" } }), { status: 401 });
+    const result = await send(runtime, { type: "pluma/scan-active-tab" });
+    assert.equal(result.type, "pluma/workflow-error");
+    assert.match(result.error, /Sign in again/);
+    assert.equal(runtime.stored.profileApiToken, undefined);
+    assert.equal(runtime.calls.inject, injects);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("a non-empty field needs its own overwrite approval", async () => {
