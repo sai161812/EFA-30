@@ -1,15 +1,31 @@
 * { box-sizing: border-box; }
-body { width: 360px; margin: 0; color: #17212b; background: #fff; font: 14px/1.45 system-ui, sans-serif; }
-main { padding: 16px; }
-header { margin-bottom: 14px; }
+body { width: 480px; max-height: 600px; margin: 0; color: #17212b; background: #fff; font: 14px/1.45 system-ui, sans-serif; }
+main { max-height: 600px; overflow: auto; padding: 16px; }
+header { margin-bottom: 12px; }
 h1 { margin: 0; font-size: 18px; }
-.tag { margin: 2px 0 0; color: #555; font-size: 12px; }
+h2 { margin: 8px 0; font-size: 16px; }
+h3 { margin: 0 0 4px; font-size: 14px; }
+.tag, .muted { margin: 2px 0; color: #505c66; font-size: 12px; }
 #status { min-height: 38px; overflow-wrap: anywhere; }
 button { width: 100%; min-height: 38px; border: 1px solid #194e80; border-radius: 5px; padding: 8px 12px; color: #fff; background: #194e80; font: inherit; cursor: pointer; }
-button:focus-visible { outline: 3px solid #f1a900; outline-offset: 2px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid #f1a900; outline-offset: 2px; }
 button:disabled { opacity: .65; cursor: wait; }
-button.secondary { margin-top: 12px; color: #194e80; background: #fff; }
-#results { margin-top: 14px; border-top: 1px solid #d4dce3; }
+button.secondary { margin-top: 8px; color: #194e80; background: #fff; }
+#preview, #outcomes { margin-top: 12px; border-top: 1px solid #d4dce3; }
+.target-meta { display: grid; grid-template-columns: 100px 1fr; gap: 3px 8px; margin: 8px 0; }
+.target-meta dt { font-weight: 600; }
+.target-meta dd { margin: 0; overflow-wrap: anywhere; }
 #summary { font-weight: 600; }
-ul { max-height: 220px; overflow: auto; padding-left: 20px; }
+.rows { display: grid; gap: 8px; }
+.field-card { display: grid; gap: 6px; padding: 10px; border: 1px solid #bdc7d0; border-radius: 5px; }
+.field-card label { display: grid; gap: 4px; }
+.field-card label:has(input[type="checkbox"]) { display: flex; align-items: flex-start; gap: 7px; }
+.field-card input[type="checkbox"] { min-width: 18px; min-height: 18px; margin: 0; }
+select, textarea { width: 100%; min-height: 34px; padding: 6px; border: 1px solid #87939d; border-radius: 4px; color: inherit; background: #fff; font: inherit; }
+textarea { resize: vertical; }
+.context, .source, .match-state, .excluded { margin: 0; overflow-wrap: anywhere; }
+.source, .context { color: #505c66; font-size: 12px; }
+.excluded { font-weight: 600; }
+.actions { display: grid; gap: 8px; margin-top: 10px; }
+ul { max-height: 180px; overflow: auto; padding-left: 20px; }
 li { margin: 6px 0; overflow-wrap: anywhere; }

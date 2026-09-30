@@ -1,0 +1,129 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+
+class FakeInput {
+  constructor(options = {}) {
+    this.tagName = options.tagName || "INPUT";
+    this.type = options.type || "text";
+    this.name = options.name || "";
+    this.id = options.id || "";
+    this.placeholder = options.placeholder || "";
+    this.autocomplete = options.autocomplete || "";
+    this.disabled = Boolean(options.disabled);
+    this.readOnly = Boolean(options.readOnly);
+    this.visible = options.visible !== false;
+    this._value = options.value || "";
+    this.labels = options.label ? [{ innerText: options.label, textContent: options.label, cloneNode() { return { innerText: options.label, textContent: options.label, querySelectorAll() { return []; } }; } }] : [];
+    this.attributes = { name: this.name, placeholder: this.placeholder, autocomplete: this.autocomplete, "aria-label": options.ariaLabel || "", "aria-labelledby": "" };
+    this.controlled = options.controlled || false;
+    this.onInput = options.onInput || null;
+    this.isConnected = true;
+  }
+  get value() { return this._value; }
+  set value(value) { this._value = String(value); }
+  getAttribute(name) { return this.attributes[name] || ""; }
+  getClientRects() { return this.visible ? [{}] : []; }
+  closest() { return null; }
+  focus() {}
+  dispatchEvent(event) { if (event.type === "input" && this.controlled && this.onInput) this.onInput(this.value); }
+  blur() {}
+}
+
+class FakeTextarea extends FakeInput {
+  constructor(options = {}) { super({ ...options, tagName: "TEXTAREA" }); }
+}
+
+async function contentHarness(fields) {
+  const runtimeListeners = [];
+  const documentListeners = {};
+  const context = {
+    chrome: { runtime: { id: "extension-test", onMessage: { addListener(callback) { runtimeListeners.push(callback); } } } },
+    document: {
+      querySelectorAll() { return fields; },
+      addEventListener(type, callback) { (documentListeners[type] ||= []).push(callback); },
+      getElementById() { return null; }
+    },
+    HTMLInputElement: FakeInput,
+    HTMLTextAreaElement: FakeTextarea,
+    getComputedStyle(element) { return { visibility: element.visible ? "visible" : "hidden", display: element.visible ? "block" : "none" }; },
+    requestAnimationFrame(callback) { callback(); },
+    Event: class { constructor(type) { this.type = type; } }
+  };
+  context.globalThis = context;
+  const source = fs.readFileSync(new URL("../extension/content/content-script.js", import.meta.url), "utf8");
+  vm.runInNewContext(source, context);
+  vm.runInNewContext(source, context);
+  const sender = { id: "extension-test", url: "chrome-extension://extension-test/extension/service-worker-v1.js" };
+  return {
+    listeners: runtimeListeners,
+    documentListeners,
+    async request(message) {
+      return new Promise((resolve) => {
+        const keepAlive = runtimeListeners[0](message, sender, resolve);
+        assert.equal(keepAlive, message.type === "pluma/fill-approved");
+      });
+    }
+  };
+}
+
+test("scan is idempotent and returns descriptors without existing text", async () => {
+  const prefilled = new FakeInput({ type: "email", name: "email", label: "Email", value: "private@example.test" });
+  const password = new FakeInput({ type: "password", name: "password", label: "Password" });
+  const otp = new FakeInput({ name: "otp", autocomplete: "one-time-code", label: "Verification code" });
+  const disabled = new FakeInput({ name: "disabled", disabled: true, label: "Disabled" });
+  const hidden = new FakeInput({ name: "hidden", visible: false, label: "Hidden" });
+  const harness = await contentHarness([prefilled, password, otp, disabled, hidden]);
+  assert.equal(harness.listeners.length, 1);
+  const result = await harness.request({ type: "pluma/scan-page" });
+  const repeated = await harness.request({ type: "pluma/scan-page" });
+  assert.equal(result.summary.total, 4);
+  assert.equal(repeated.fields[0].id, result.fields[0].id, "repeated scans retain the same temporary identity for the same element");
+  assert.equal(result.summary.eligible, 1);
+  assert.equal(result.fields[0].hasValue, true);
+  assert.equal("value" in result.fields[0], false);
+  assert.match(result.fields.find((field) => field.inputType === "password").unsupportedReason, /Password/);
+  assert.match(result.fields.find((field) => field.name === "otp").unsupportedReason, /One-time/);
+  assert.equal(result.fields.find((field) => field.name === "disabled").eligible, false);
+});
+
+test("controlled fields retain an approved value after input, change, and blur", async () => {
+  const stateful = new FakeInput({ type: "email", name: "email", label: "Email", controlled: true, onInput(value) { this.value = value; } });
+  const harness = await contentHarness([stateful]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  const result = await harness.request({ type: "pluma/fill-approved", items: [{ fieldId: scan.fields[0].id, value: "avery.example@example.test", overwrite: false, expected: scan.fields[0] }] });
+  assert.equal(result.outcomes[0].status, "filled");
+  assert.equal(stateful.value, "avery.example@example.test");
+});
+
+test("an edit after preview invalidates that field before any write", async () => {
+  const field = new FakeInput({ type: "text", name: "first_name", label: "First name" });
+  const harness = await contentHarness([field]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  field.value = "Changed by the user";
+  harness.documentListeners.input[0]({ target: field });
+  const result = await harness.request({ type: "pluma/fill-approved", items: [{ fieldId: scan.fields[0].id, value: "Avery", overwrite: false, expected: scan.fields[0] }] });
+  assert.equal(result.outcomes[0].status, "skipped");
+  assert.match(result.outcomes[0].message, /changed after preview/);
+  assert.equal(field.value, "Changed by the user");
+});
+
+test("a field that becomes hidden after preview is skipped", async () => {
+  const field = new FakeInput({ type: "text", name: "first_name", label: "First name" });
+  const harness = await contentHarness([field]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  field.visible = false;
+  const result = await harness.request({ type: "pluma/fill-approved", items: [{ fieldId: scan.fields[0].id, value: "Avery", overwrite: false, expected: scan.fields[0] }] });
+  assert.equal(result.outcomes[0].status, "skipped");
+  assert.equal(field.value, "");
+});
+
+test("existing values require per-field overwrite approval at the content boundary", async () => {
+  const field = new FakeInput({ type: "text", name: "name", label: "Full name", value: "Current entry" });
+  const harness = await contentHarness([field]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  const result = await harness.request({ type: "pluma/fill-approved", items: [{ fieldId: scan.fields[0].id, value: "Avery Example", overwrite: false, expected: scan.fields[0] }] });
+  assert.equal(result.outcomes[0].status, "skipped");
+  assert.equal(field.value, "Current entry");
+});
