@@ -15,10 +15,10 @@ function harness(file, sendMessage) {
   const elements = new Map();
   const context = vm.createContext({ MESSAGE, isMessageType, console, setTimeout, clearTimeout,
     chrome: { runtime: { sendMessage } }, Option: class extends Element { constructor(text, value) { super(); this.text = text; this.value = value; } },
-    document: { querySelector(selector) { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); }, createElement() { return new Element(); } }
+    document: { querySelector(selector) { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); }, createElement(tag) { const element = new Element(); if (tag === "textarea") Object.defineProperty(element, "type", { get() { return "textarea"; } }); return element; } }
   });
   const source = fs.readFileSync(new URL(`../extension/${file}`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace("void initialize();", "").replace("void loadPendingPreview();", "");
-  vm.runInContext(source, context);
+  vm.runInContext('"use strict";\n' + source, context);
   return context;
 }
 
@@ -50,4 +50,16 @@ test("popup approval carries the acknowledged preview revision", async () => {
   assert.equal(messages[1].type, MESSAGE.APPROVE_AND_FILL);
   assert.equal(messages[1].previewRevision, 1);
   assert.equal(messages[1].previewToken, "preview-a");
+});
+
+
+test("Add fact creates a blank editable value without writing textarea.type", () => {
+  const ctx = harness("settings.js", async () => ({}));
+  const row = vm.runInContext('createFactRow()', ctx);
+  const controls = row.children.flatMap((item) => item.children || []);
+  const value = controls.find((item) => item.dataset?.key === "value");
+  assert.equal(value.type, "textarea");
+  assert.equal(value.value, "");
+  value.value = "A user-entered value";
+  assert.equal(value.value, "A user-entered value");
 });

@@ -170,7 +170,7 @@ function createFactRow(fact = {}) {
   for (const [labelText, key, value, type] of fields) {
     const label = document.createElement("label");
     const input = document.createElement(key === "value" ? "textarea" : "input");
-    input.type = type;
+    if (key !== "value") input.type = type;
     input.maxLength = key === "value" ? 12000 : key === "aliases" ? 1600 : key === "source" ? 160 : 120;
     input.value = value || "";
     input.dataset.key = key;
