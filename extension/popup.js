@@ -7,6 +7,7 @@ const timers = new Map();
 let updateQueue = Promise.resolve();
 let currentPreview = null;
 let isBusy = false;
+let updateError = null;
 
 document.querySelector("#scan").addEventListener("click", scan);
 document.querySelector("#approve").addEventListener("click", approve);
@@ -30,7 +31,10 @@ async function scan() {
   document.querySelector("#outcomes").hidden = true;
   setStatus("Scanning the active page…");
   try {
-    await flushValueUpdates();
+    timers.forEach(clearTimeout);
+    timers.clear();
+    await updateQueue;
+    updateError = null;
     const response = await chrome.runtime.sendMessage({ type: MESSAGE.SCAN_ACTIVE_TAB });
     if (handleError(response)) return;
     renderPreview(response);
@@ -42,7 +46,7 @@ async function approve() {
   setBusy(true);
   try {
     await flushValueUpdates();
-    const response = await chrome.runtime.sendMessage({ type: MESSAGE.APPROVE_AND_FILL });
+    const response = await chrome.runtime.sendMessage({ type: MESSAGE.APPROVE_AND_FILL, ...previewVersion() });
     if (handleError(response)) return;
     if (response.type !== MESSAGE.FILL_RESULT) throw new Error("The extension returned an unexpected result.");
     renderOutcomes(response.outcomes || []);
@@ -62,7 +66,7 @@ async function cancelPreview() {
     timers.forEach(clearTimeout);
     timers.clear();
     await updateQueue;
-    const response = await chrome.runtime.sendMessage({ type: MESSAGE.CANCEL_PREVIEW });
+    const response = await chrome.runtime.sendMessage({ type: MESSAGE.CANCEL_PREVIEW, ...previewVersion() });
     if (handleError(response)) return;
     currentPreview = null;
     preview.hidden = true;
@@ -73,8 +77,9 @@ async function cancelPreview() {
 
 function renderPreview(data) {
   currentPreview = data;
+  updateError = null;
   document.querySelector("#origin").textContent = data.target.origin;
-  const source = data.profile.source === "pod16" ? "POD-16 approved facts" : "fictional development data";
+  const source = data.profile.source === "local" ? "Your local approved facts" : data.profile.source === "pod16" ? "POD-16 approved facts" : "fictional development data";
   document.querySelector("#profile").textContent = `${data.profile.name} (version ${data.profile.version}; ${source})`;
   document.querySelector("#expiry").textContent = `This preview expires ${new Date(data.expiresAt).toLocaleTimeString()}.`;
   const timings = data.timings || {};
@@ -229,18 +234,35 @@ async function flushValueUpdates() {
     enqueueUpdate(fieldId, { valueOverride: value });
   }
   await updateQueue;
+  if (updateError) throw updateError;
 }
 
 function sendChange(fieldId, change, redraw = false) {
+  if (Object.hasOwn(change, "profileKey") && timers.has(fieldId)) {
+    clearTimeout(timers.get(fieldId));
+    timers.delete(fieldId);
+  }
   enqueueUpdate(fieldId, change, redraw);
 }
 
+function previewVersion() {
+  return { previewToken: currentPreview?.previewToken, previewRevision: currentPreview?.previewRevision };
+}
 function enqueueUpdate(fieldId, changes, redraw = false) {
+  const token = currentPreview?.previewToken;
   updateQueue = updateQueue.then(async () => {
-    const response = await chrome.runtime.sendMessage({ type: MESSAGE.UPDATE_PREVIEW, fieldId, changes });
-    if (handleError(response)) return;
+    if (updateError) return;
+    if (token !== currentPreview?.previewToken) throw new Error("The preview changed. Scan again to review your choices.");
+    const response = await chrome.runtime.sendMessage({ type: MESSAGE.UPDATE_PREVIEW, fieldId, changes, ...previewVersion() });
+    if (handleError(response)) throw new Error(response.error || "Preview changes were not saved. Scan again.");
+    if (response.previewToken !== token || !Number.isInteger(response.previewRevision)) throw new Error("The preview update was not acknowledged. Scan again.");
+    currentPreview.previewRevision = response.previewRevision;
+    currentPreview.rows = currentPreview.rows.map((row) => row.fieldId === fieldId ? response.row : row);
     if (redraw && response.row) renderRow(response.row);
-  }).catch((error) => setStatus(error?.message || "Could not save the preview change."));
+  }).catch((error) => {
+    updateError = error;
+    setStatus(error?.message || "Could not save the preview change. Scan again before filling.");
+  });
   return updateQueue;
 }
 

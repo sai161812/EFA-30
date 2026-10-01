@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "PLUMA Autofill (Development)",
-  "version": "0.2.0",
-  "description": "A review-first form autofill development prototype.",
+  "name": "PLUMA Autofill",
+  "version": "0.3.0",
+  "description": "Review and approve autofill suggestions from your local profiles or optional POD-16 profiles.",
   "action": {
     "default_title": "Scan this form",
     "default_popup": "extension/popup.html"
@@ -15,9 +15,11 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "optional_host_permissions": [
     "http://127.0.0.1:8000/*"
-  ]
+  ],
+  "minimum_chrome_version": "106"
 }

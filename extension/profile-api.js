@@ -48,16 +48,20 @@ export function validateProfileSummaryList(payload) {
   return payload.data;
 }
 
-export function validateProfile(payload) {
+export function validateProfile(payload, expectedId) {
   const item = payload?.data ?? payload;
   if (!item || typeof item.id !== "string" || !["personal", "college", "professional"].includes(item.profile_type) ||
       typeof item.name !== "string" || !Number.isInteger(item.version) || item.version < 1 || !Array.isArray(item.facts)) {
     throw new Error("POD-16 returned an invalid profile.");
   }
+  if (expectedId && item.id !== expectedId) throw new Error("POD-16 returned a different profile identity. Select and review the correct profile.");
+  const keys = new Set();
   const facts = item.facts.map((fact) => {
     if (typeof fact.key !== "string" || typeof fact.label !== "string" || typeof fact.fact_type !== "string" ||
         typeof fact.value !== "string" || typeof fact.source !== "string" || !Array.isArray(fact.aliases) ||
         fact.aliases.some((alias) => typeof alias !== "string")) throw new Error("POD-16 returned an invalid profile fact.");
+    if (keys.has(fact.key)) throw new Error("POD-16 returned duplicate profile fact keys.");
+    keys.add(fact.key);
     return { key: fact.key, label: fact.label, type: fact.fact_type, value: fact.value, source: fact.source,
       updatedAt: fact.updated_at, aliases: fact.aliases, datePrecision: fact.date_precision };
   });

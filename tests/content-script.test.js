@@ -57,7 +57,9 @@ class FakeTextarea extends FakeInput {
 async function contentHarness(fields, references = {}) {
   const runtimeListeners = [];
   const documentListeners = {};
+  let lastFields = [];
   const context = {
+    location: { href: "https://fixture.example.test/form" },
     chrome: { runtime: { id: "extension-test", onMessage: { addListener(callback) { runtimeListeners.push(callback); } } } },
     document: {
       querySelectorAll() { return fields; },
@@ -67,7 +69,7 @@ async function contentHarness(fields, references = {}) {
     HTMLInputElement: FakeInput,
     HTMLTextAreaElement: FakeTextarea,
     HTMLSelectElement: FakeSelect,
-    getComputedStyle(element) { return { visibility: element.visible ? "visible" : "hidden", display: element.visible ? "block" : "none" }; },
+    getComputedStyle(element) { return { visibility: element.visible !== false ? "visible" : "hidden", display: element.visible !== false ? "block" : "none", opacity: element.opacity || "1" }; },
     requestAnimationFrame(callback) { callback(); },
     Event: class { constructor(type) { this.type = type; } }
   };
@@ -85,8 +87,9 @@ async function contentHarness(fields, references = {}) {
       return { keepAlive, response };
     },
     async request(message) {
+      if (message.type === "pluma/fill-approved") message = { targetUrl: context.location.href, expectedFields: lastFields, ...message };
       return new Promise((resolve) => {
-        const keepAlive = runtimeListeners[0](message, sender, resolve);
+        const keepAlive = runtimeListeners[0](message, sender, (result) => { if (message.type === "pluma/scan-page") lastFields = result.fields; resolve(result); });
         assert.equal(keepAlive, message.type === "pluma/fill-approved");
       });
     }
@@ -242,4 +245,71 @@ test("a newly inserted dynamic form field appears in a fresh scan", async () => 
   assert.equal(updated.fields.length, 2);
   assert.equal(updated.fields[1].label, "Current city");
   assert.equal(updated.fields[1].eligible, true);
+});
+
+test("camelCase sensitive names are excluded even with an innocuous label", async () => {
+  const input = new FakeInput({ name: "cardNumber", label: "Reference" });
+  const harness = await contentHarness([input]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  assert.equal(scan.fields[0].eligible, false);
+});
+
+test("native validity rejection is not reported as a successful fill", async () => {
+  const input = new FakeInput({ type: "email", label: "Email" });
+  input.validity = { valid: false };
+  const harness = await contentHarness([input]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  const result = await harness.request({ type: "pluma/fill-approved", items: [{ fieldId: scan.fields[0].id, expected: scan.fields[0], value: "invalid", overwrite: false }] });
+  assert.equal(result.outcomes[0].status, "failed");
+});
+
+test("a later control reverting an earlier write invalidates its success result", async () => {
+  const first = new FakeInput({ label: "First name" });
+  const second = new FakeInput({ label: "Last name", controlled: true, onInput() { first.value = "reverted"; } });
+  const harness = await contentHarness([first, second]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  const result = await harness.request({ type: "pluma/fill-approved", items: scan.fields.map((field) => ({ fieldId: field.id, expected: field, value: "Approved", overwrite: false })) });
+  assert.equal(result.outcomes[0].status, "failed");
+});
+
+test("native option values retain significant whitespace", async () => {
+  const select = new FakeSelect({ label: "Study year", options: [{ value: " Junior ", label: "Junior", disabled: false }] });
+  const harness = await contentHarness([select]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  assert.equal(scan.fields[0].options[0].value, " Junior ");
+});
+
+test("a new form step inserted after preview invalidates old approval", async () => {
+  const first = new FakeInput({ label: "First name" });
+  const fields = [first]; const harness = await contentHarness(fields);
+  const scan = await harness.request({type:"pluma/scan-page"});
+  fields.push(new FakeInput({ label:"New step" }));
+  const result = await harness.request({type:"pluma/fill-approved",items:[{fieldId:scan.fields[0].id,expected:scan.fields[0],value:"Approved",overwrite:false}]});
+  assert.equal(result.outcomes[0].status,"skipped"); assert.equal(first.value,"");
+});
+
+test("excluded password values are never read into scan snapshots", async () => {
+  const input = new FakeInput({type:"password",label:"Password"}); let reads = 0;
+  Object.defineProperty(input,"value",{get(){reads++;return "page-secret";}});
+  const harness = await contentHarness([input]);
+  const result = await harness.request({type:"pluma/scan-page"});
+  assert.equal(result.fields[0].eligible,false); assert.equal(reads,0);
+});
+
+test("a label change beyond the old display truncation limit invalidates approval", async () => {
+  const input = new FakeInput({label:"Email",name:"email",ariaLabel:"A".repeat(180)+" applicant"});
+  const harness = await contentHarness([input]); const scan = await harness.request({type:"pluma/scan-page"});
+  input.attributes["aria-label"] = "A".repeat(180)+" different person";
+  const result = await harness.request({type:"pluma/fill-approved",items:[{fieldId:scan.fields[0].id,expected:scan.fields[0],value:"value",overwrite:false}]});
+  assert.equal(result.outcomes[0].status,"skipped"); assert.equal(input.value,"");
+});
+
+test("transparent or inert ancestors exclude controls from disclosure", async () => {
+  const input=new FakeInput({label:"Email",name:"email"});
+  input.parentElement={opacity:"0",getAttribute(){return "";},matches(){return false;}};
+  const harness=await contentHarness([input]);
+  const scan=await harness.request({type:"pluma/scan-page"});
+  assert.equal(scan.fields.length,0);
+  input.parentElement.opacity="1"; input.parentElement.inert=true;
+  const inert=await harness.request({type:"pluma/scan-page"}); assert.equal(inert.fields.length,0);
 });

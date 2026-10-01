@@ -9,6 +9,8 @@ export const MESSAGE = Object.freeze({
   FILL_APPROVED: "pluma/fill-approved",
   FILL_RESULT: "pluma/fill-result",
   WORKFLOW_ERROR: "pluma/workflow-error",
+  LOCAL_PROFILE_ENABLE: "pluma/local-profile-enable",
+  LOCAL_PROFILE_DELETE: "pluma/local-profile-delete",
   API_LOGIN: "pluma/api-login",
   API_CONFIGURE: "pluma/api-configure",
   API_SELECT_PROFILE: "pluma/api-select-profile",

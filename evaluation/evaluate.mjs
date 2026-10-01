@@ -1,59 +1,55 @@
-import { performance } from "node:perf_hooks";
+﻿import { performance } from "node:perf_hooks";
 import { corpus } from "./corpus.mjs";
+import { expectedValues } from "./expected-values.mjs";
+import { summarize, correctProposal } from "./metrics.mjs";
 import { DEVELOPMENT_PROFILE } from "../extension/development/profile.js";
 import { matchField } from "../extension/matching/matcher.js";
 
-const families = corpus.families;
-const expectedFamilies = 10;
-if (families.length !== expectedFamilies || families.filter((f) => f.split === "held-out").length < 5) throw new Error("Corpus must contain 10 families with at least five held out.");if (families.some((family) => family.cases.length !== 10) || new Set(families.map((family) => family.blueprint)).size !== 10) throw new Error("Each independent template family must have 10 labeled fields and a unique blueprint.");
-if (families.length * 2 !== 20 || families.reduce((sum, family) => sum + family.cases.length * 2, 0) !== 200) throw new Error("Corpus must expand to 20 form runs and 200 fields.");
-const profile = DEVELOPMENT_PROFILE.facts;
-const rows = [];
-const formTimes = [];
-for (const family of families) {
-  for (const revision of [1, 2]) {
+const rows = [], timings = [], descriptorSets = new Set(), descriptors = new Set();
+for (const group of corpus.families) {
+  const signature = JSON.stringify(group.cases);
+  if (descriptorSets.has(signature)) throw new Error("Duplicate descriptor sets cannot increase the corpus denominator.");
+  descriptorSets.add(signature);
+  let matchingMs = 0;
+  for (const [i, label] of group.cases.entries()) {
+    const field = { kind: label.kind, inputType: label.inputType, label: label.label, autocomplete: label.autocomplete,
+      name: label.name, context: label.context, ariaLabels: [], instructions: [], domId: "", placeholder: "",
+      options: label.options, multiple: false, hasValue: false, maxLength: -1, eligible: true };
+    descriptors.add(JSON.stringify(field));
+    field.id = `${group.id}-${i + 1}`;
     const started = performance.now();
-    for (let i = 0; i < family.cases.length; i++) {
-      const label = family.cases[i];
-      const field = { id: `${family.id}-v${revision}-${i + 1}`, kind: label.kind, inputType: label.inputType,
-        label: label.label, autocomplete: label.autocomplete, name: label.name, context: label.context,
-        ariaLabels: [], instructions: [], domId: "", placeholder: "", options: label.options, multiple: false,
-        hasValue: false, maxLength: -1, eligible: true };
-      const result = matchField(field, profile);
-      rows.push({ family: family.id, split: family.split, revision, field: field.id, expectedStatus: label.expectedStatus,
-        expectedProfileKey: label.expectedProfileKey, actualStatus: result.status, actualProfileKey: result.profileKey,
-        correct: result.status === label.expectedStatus && (label.expectedStatus !== "matched" || result.profileKey === label.expectedProfileKey) });
-    }
-    formTimes.push(performance.now() - started);
+    const result = matchField(field, DEVELOPMENT_PROFILE.facts);
+    matchingMs += performance.now() - started;
+    const fact = DEVELOPMENT_PROFILE.facts.find((fact) => fact.key === result.profileKey);
+    const expectedValue = label.expectedValue ?? expectedValues[label.expectedProfileKey];
+    if (label.expectedStatus === "matched" && typeof expectedValue !== "string") throw new Error(`Missing expected value for ${field.id}`);
+    rows.push({ group: group.id, historicalSplit: group.split, field: field.id, expectedStatus: label.expectedStatus,
+      expectedProfileKey: label.expectedProfileKey, expectedValue, actualStatus: result.status, actualProfileKey: result.profileKey,
+      actualValue: result.composedValue ?? result.formattedValue ?? fact?.value });
   }
+  timings.push(matchingMs);
 }
-const summarize = (split) => {
-  const sample = rows.filter((r) => split === "all" || r.split === split);
-  const proposals = sample.filter((r) => r.actualStatus === "matched");
-  const trueSources = sample.filter((r) => r.expectedStatus === "matched");
-  const correct = proposals.filter((r) => r.expectedStatus === "matched" && r.actualProfileKey === r.expectedProfileKey);
-  const exactStatuses = sample.filter((r) => r.expectedStatus === r.actualStatus).length;
-  return { fields: sample.length, expectedProfileSourcedFields: trueSources.length, proposals: proposals.length,
-    correctProposals: correct.length, incorrectOrUnsupportedProposals: proposals.length - correct.length,
-    suggestionPrecision: proposals.length ? correct.length / proposals.length : null,
-    correctCoverage: trueSources.length ? correct.length / trueSources.length : null,
-    expectedStatusAgreement: sample.length ? exactStatuses / sample.length : null };
-};
-const sorted = [...formTimes].sort((a, b) => a - b);
-const ms = { samples: formTimes.length, median: sorted[Math.floor(sorted.length / 2)], mean: formTimes.reduce((a, b) => a + b, 0) / formTimes.length,
-  measured: "Node local matcher only; does not include page scanning, profile API, browser messaging, rendering or filling." };
+const sorted = [...timings].sort((a, b) => a - b);
+const midpoint = Math.floor(sorted.length / 2);
 const report = {
-  title: "PLUMA Autofill synthetic corpus evaluation",
+  title: "Descriptor regression evaluation; not a browser/form release benchmark",
   provenance: corpus.provenance,
-  scope: { forms: 20, uniqueTemplateFamilies: families.length, uniqueOrigins: "10 synthetic placeholders; site independence is claimed only at authored template-family level", labeledFields: rows.length,
-    heldOutFamilies: families.filter((f) => f.split === "held-out").map((f) => f.id), profile: corpus.profileId,
-    supportedFieldTypes: ["text", "email", "tel", "url", "textarea", "date", "single select"], groundTruthLocation: "evaluation/corpus.mjs; separate from matcher implementation" },
-  coldStart: { all: summarize("all"), development: summarize("development"), heldOut: summarize("held-out") },
-  savedCorrectionReplay: { capturedUserCorrectionSessions: 0, result: "Insufficient samples: no real saved-correction sessions or repeated-user outcomes are in this corpus. The extension's rule behavior is covered by service-worker tests; do not interpret test cases as user outcome rates." },
-  fillReliability: { observedAttempts: 0, result: "Not measured by this matcher corpus. Automated contract tests cover simulated content-script outcomes; browser fill reliability requires instrumented browser runs." },
-  scanAndMatchingTime: ms,
-  profileApiLatency: { samples: 0, result: "Not measured: no live POD-16 API was used by this corpus runner. Runtime preview reports page scan + matching separately from profile request latency." },
-  humanCompletionTime: { samples: 0, result: "Not measured. Follow evaluation/MANUAL_PROTOCOL.md; no human timings are fabricated." },
-  fieldResults: rows
+  scope: { authoredDescriptorGroups: corpus.families.length, distinctDescriptorSets: descriptorSets.size,
+    labeledCases: rows.length, distinctFieldDescriptors: descriptors.size, browserFormsEvaluated: 0, realOrigins: 0,
+    independentlyVerifiedTemplateFamilies: 0, untouchedHeldOutFamilies: 0,
+    requiredReleaseScope: { representativeForms: 20, distinctOriginsOrTemplateFamilies: 10, eligibleFields: 200, heldOutFamilies: 5 },
+    scopeSatisfied: false,
+    splitStatus: "F06-F10 were previously inspected. All groups are now regression data; acquire a new untouched holdout before claiming held-out performance.",
+    supportedDescriptorTypes: ["text", "email", "tel", "url", "textarea", "date", "single select"] },
+  coldStart: { all: summarize(rows), originalDevelopment: summarize(rows.filter((row) => row.historicalSplit === "development")),
+    formerHeldOut: summarize(rows.filter((row) => row.historicalSplit === "held-out")) },
+  savedCorrections: { observedSessions: 0, result: "Insufficient samples. Worker tests show one synthetic correction reused without another mapping edit and still unchecked; they are not population performance measurements." },
+  fillReliability: { observedBrowserAttempts: 0, result: "Unmeasured. DOM contract simulations are not browser acceptance measurements." },
+  matcherOnlyTime: { samples: timings.length, medianMs: sorted.length % 2 ? sorted[midpoint] : (sorted[midpoint - 1] + sorted[midpoint]) / 2,
+    meanMs: timings.reduce((a, b) => a + b, 0) / timings.length, perGroupMs: timings,
+    scope: "Sum of matcher calls per 10-descriptor group. Excludes DOM scanning, messaging, API, preview rendering and filling." },
+  profileApiLatency: { samples: 0 }, humanCompletionTime: { participants: 0, result: "Unmeasured; see MANUAL_PROTOCOL.md." },
+  fieldResults: rows.map(({ expectedValue, actualValue, ...row }) => ({ ...row,
+    correctProposal: correctProposal({ ...row, expectedValue, actualValue }), valueMatchesGroundTruth: actualValue === expectedValue }))
 };
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

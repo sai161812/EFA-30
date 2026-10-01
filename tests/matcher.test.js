@@ -85,3 +85,18 @@ test("oversized descriptions are never silently shortened", () => {
   assert.equal(matchField(field({ label: "About", maxLength: 50 }), [longFact]).status, MATCH_STATUS.NEEDS_CHOICE);
   assert.equal(matchField(field({ label: "About", maxLength: 0 }), [{ ...longFact, value: "x" }]).status, MATCH_STATUS.NEEDS_CHOICE);
 });
+
+test("manual date mappings cannot reuse graduation for birth date or invalid years", () => {
+  const graduation = { key: "graduationDate", label: "Graduation date", type: "date", value: "2027-05-20", datePrecision: "day", aliases: [] };
+  assert.equal(formatSelectedFact(field({ inputType: "date", label: "Birth date" }), graduation).status, MATCH_STATUS.NEEDS_CHOICE);
+  const invalidYear = { key: "graduationYear", label: "Graduation year", type: "year", value: "not a year", aliases: [] };
+  assert.notEqual(matchField(field({ label: "Graduation year" }), [invalidYear]).status, MATCH_STATUS.MATCHED);
+});
+
+test("formatted addresses and years obey control constraints and unique native options", () => {
+  assert.equal(matchField(field({label:"Current address",maxLength:2}), facts).status, MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(matchField(field({label:"Graduation year",inputType:"select-one",kind:"select",options:[{value:"y27",label:"2027",disabled:false}]}),facts).formattedValue,"y27");
+  assert.equal(formatSelectedFact(field({label:"First name",autocomplete:"given-name"}),facts.find((fact)=>fact.key==="lastName")).status,MATCH_STATUS.NEEDS_CHOICE);
+  const address = formatAddress([{key:"currentAddressLine1",label:"Current address line 1",value:"First"},{key:"currentAddressLine2",label:"Current address line 2",value:"Second"}],"current");
+  assert.equal(address.value,"First, Second");
+});

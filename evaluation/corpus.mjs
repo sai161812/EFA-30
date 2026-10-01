@@ -1,5 +1,5 @@
 // Ground-truth labels live here, separate from extension/matching/matcher.js.
-// Each family is a distinct synthetic template blueprint. Two form revisions per family are expanded by evaluate.mjs.
+// These are descriptor groups, not rendered forms. Split labels are historical: all groups have been inspected and are regression-only.
 const make = (label, expectedStatus = "matched", expectedProfileKey = null, options = {}) => ({
   label, expectedStatus, expectedProfileKey,
   inputType: options.inputType || "text",

@@ -9,12 +9,25 @@ const PREVIEW_TTL_MS = 10 * 60 * 1000;
 const API_SETTINGS_KEY = "profileApiSettings";
 const API_TOKEN_KEY = "profileApiToken";
 const MEMORY_RULES_KEY = "correctionMemoryRules";
-const sessionReady = chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+const sessionReady = Promise.all([chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }), chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })]);
+let profileActions = Promise.resolve();
+let workflowEpoch = 0;
+let previewUpdates = Promise.resolve();
 let activeFillToken = null;
+const EXPIRY_ALARM = "preview-expiry";
+chrome.alarms.onAlarm.addListener(async ({ name }) => {
+  if (name === EXPIRY_ALARM) await loadPending().catch(() => {});
+});
+void sessionReady.then(async () => {
+  const saved = await chrome.storage.session.get(SESSION_KEY);
+  const pending = saved[SESSION_KEY];
+  if (pending?.expiresAt <= Date.now()) await clearPending(pending.token);
+  else if (pending) await chrome.alarms.create(EXPIRY_ALARM, { when: pending.expiresAt });
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !Object.values(MESSAGE).includes(message.type) || message.type === MESSAGE.SCAN_PAGE || message.type === MESSAGE.FILL_APPROVED) return false;
-  const apiMessage = [MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
+  const apiMessage = [MESSAGE.LOCAL_PROFILE_ENABLE, MESSAGE.LOCAL_PROFILE_DELETE, MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
     MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE,
     MESSAGE.MEMORY_LIST, MESSAGE.MEMORY_EDIT, MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_CLEAR, MESSAGE.DEV_PROFILE_SET].includes(message.type);
   if (apiMessage ? !isTrustedSettings(sender) : !isTrustedPopup(sender)) {
@@ -37,17 +50,26 @@ function isTrustedSettings(sender) {
 
 async function dispatchProfileApi(message) {
   validateSettingsMessage(message);
+  if ([MESSAGE.LOCAL_PROFILE_ENABLE, MESSAGE.LOCAL_PROFILE_DELETE, MESSAGE.API_CONFIGURE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE, MESSAGE.DEV_PROFILE_SET].includes(message.type)) await clearPending();
   const local = await chrome.storage.local.get(API_SETTINGS_KEY);
   const settings = local[API_SETTINGS_KEY] || { origin: "", selectedProfileId: "" };
   const session = await chrome.storage.session.get(API_TOKEN_KEY);
   const token = session[API_TOKEN_KEY];
   if (message.type === MESSAGE.API_STATUS) {
     const dev = await chrome.storage.local.get("developmentProfileEnabled");
-    return { type: MESSAGE.API_STATUS, origin: settings.origin, selectedProfileId: settings.selectedProfileId, authenticated: Boolean(token), developmentProfileEnabled: dev.developmentProfileEnabled === true };
+    return { type: MESSAGE.API_STATUS, origin: settings.origin, selectedProfileId: settings.selectedProfileId, authenticated: Boolean(token), localMode: settings.mode === "local", developmentProfileEnabled: dev.developmentProfileEnabled === true };
+  }
+  if (message.type === MESSAGE.LOCAL_PROFILE_ENABLE) {
+    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { mode: "local", origin: "", selectedProfileId: settings.mode === "local" ? settings.selectedProfileId : "" }, developmentProfileEnabled: false });
+    await chrome.storage.session.remove(API_TOKEN_KEY);
+    return { type: message.type };
+  }
+  if (settings.mode === "local" && [MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE, MESSAGE.LOCAL_PROFILE_DELETE].includes(message.type)) {
+    return dispatchLocalProfile(message, settings);
   }
   if (message.type === MESSAGE.DEV_PROFILE_SET) {
     if (typeof message.enabled !== "boolean") throw new Error("Choose whether to enable the fictional development profile.");
-    if (settings.origin && message.enabled) throw new Error("The development profile is unavailable while POD-16 is configured.");
+    if ((settings.origin || settings.mode === "local") && message.enabled) throw new Error("The development profile is unavailable while POD-16 is configured.");
     await chrome.storage.local.set({ developmentProfileEnabled: message.enabled });
     await clearPending();
     return { type: MESSAGE.DEV_PROFILE_SET, enabled: message.enabled };
@@ -57,13 +79,13 @@ async function dispatchProfileApi(message) {
     const permission = await chrome.permissions.contains({ origins: [`${origin}/*`] });
     if (!permission) throw new Error("This API origin is not included in this extension build. Add its exact origin permission and reload the extension.");
     if (settings.origin && settings.origin !== origin) await chrome.storage.session.remove([API_TOKEN_KEY, SESSION_KEY]);
-    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" }, developmentProfileEnabled: false });
+    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, mode: "pod16", origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" }, developmentProfileEnabled: false });
     return { type: MESSAGE.API_CONFIGURE, origin };
   }
   if (message.type === MESSAGE.API_SELECT_PROFILE) {
     if (!settings.origin || !token) throw new Error("Sign in to POD-16 before selecting a profile.");
     const profileId = validProfileId(message.profileId);
-    await fetchProfileApi({ origin: settings.origin, token, path: `/${profileId}` });
+    validateProfile(await fetchProfileApi({ origin: settings.origin, token, path: `/${profileId}` }), profileId);
     await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, selectedProfileId: profileId } });
     await clearPending();
     return { type: MESSAGE.API_SELECT_PROFILE, profileId };
@@ -76,7 +98,7 @@ async function dispatchProfileApi(message) {
     const response = await fetchProfileApi({ origin, token: message.token });
     validateProfileSummaryList(response);
     await chrome.storage.session.set({ [API_TOKEN_KEY]: message.token });
-    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" } });
+    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, mode: "pod16", origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" } });
     await clearPending();
     return { type: MESSAGE.API_LOGIN, origin, authenticated: true, profiles: response.data };
   }
@@ -90,7 +112,7 @@ async function dispatchProfileApi(message) {
   }
   if (message.type === MESSAGE.API_READ_PROFILE) {
     const id = validProfileId(message.profileId);
-    return { type: MESSAGE.API_READ_PROFILE, profile: validateProfile(await fetchProfileApi({ origin: settings.origin, token, path: `/${id}` })) };
+    return { type: MESSAGE.API_READ_PROFILE, profile: validateProfile(await fetchProfileApi({ origin: settings.origin, token, path: `/${id}` }), id) };
   }
   if (message.type === MESSAGE.API_CREATE_PROFILE) {
     validateProfileWrite(message.profile, true);
@@ -101,15 +123,54 @@ async function dispatchProfileApi(message) {
   if (message.type === MESSAGE.API_UPDATE_PROFILE) {
     const id = validProfileId(message.profileId);
     validateProfileWrite(message.profile, false);
-    const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token, path: `/${id}`, method: "PATCH", body: message.profile }));
+    const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token, path: `/${id}`, method: "PATCH", body: message.profile }), id);
     await clearPending();
     return { type: MESSAGE.API_UPDATE_PROFILE, profile };
   }
   throw new Error("Unsupported profile action.");
 }
 
+async function dispatchLocalProfile(message, settings) {
+  const saved = await chrome.storage.local.get("localProfiles");
+  const profiles = saved.localProfiles || [];
+  if (message.type === MESSAGE.API_LIST_PROFILES) return { type: message.type, profiles: profiles.map(({ id, name, profile_type, version }) => ({ id, name, profile_type, version })) };
+  if (message.type === MESSAGE.API_CREATE_PROFILE) {
+    validateProfileWrite(message.profile, true);
+    if (profiles.some((item) => item.profile_type === message.profile.profile_type)) throw new Error("A local profile of this type already exists. Select it to edit its facts.");
+    const raw = { ...message.profile, id: crypto.randomUUID(), version: 1, updated_at: new Date().toISOString() };
+    profiles.push(raw);
+    await chrome.storage.local.set({ localProfiles: profiles });
+    return { type: message.type, profile: validateProfile(raw) };
+  }
+  const id = validProfileId(message.profileId);
+  const index = profiles.findIndex((item) => item.id === id);
+  if (index < 0) throw new Error("This local profile no longer exists. Choose a profile in Settings.");
+  if (message.type === MESSAGE.API_SELECT_PROFILE) {
+    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, selectedProfileId: id } });
+    return { type: message.type, profileId: id };
+  }
+  if (message.type === MESSAGE.LOCAL_PROFILE_DELETE) {
+    profiles.splice(index, 1);
+    await chrome.storage.local.set({ localProfiles: profiles, [API_SETTINGS_KEY]: { ...settings, selectedProfileId: settings.selectedProfileId === id ? "" : settings.selectedProfileId } });
+    const rules = await getMemoryRules();
+    await writeMemoryRules(rules.filter((rule) => rule.profileSource !== "local" || rule.profileId !== id));
+    return { type: message.type };
+  }
+  if (message.type === MESSAGE.API_UPDATE_PROFILE) {
+    validateProfileWrite(message.profile, false);
+    if (profiles[index].version !== message.profile.expected_version) throw new Error("This local profile changed. Reload Settings before saving.");
+    const { name, facts } = message.profile;
+    const updated_at = new Date().toISOString();
+    profiles[index] = { ...profiles[index], name, facts: facts.map((fact) => ({ ...fact, updated_at })), version: profiles[index].version + 1, updated_at };
+    await chrome.storage.local.set({ localProfiles: profiles });
+  }
+  return { type: message.type, profile: validateProfile(profiles[index], id) };
+}
+
 function validateSettingsMessage(message) {
   const allowed = {
+    [MESSAGE.LOCAL_PROFILE_ENABLE]: ["type"],
+    [MESSAGE.LOCAL_PROFILE_DELETE]: ["type", "profileId"],
     [MESSAGE.API_STATUS]: ["type"],
     [MESSAGE.DEV_PROFILE_SET]: ["type", "enabled"],
     [MESSAGE.API_LOGOUT]: ["type"],
@@ -156,6 +217,12 @@ function validProfileId(value) {
 async function getSelectedProfile() {
   const local = await chrome.storage.local.get(API_SETTINGS_KEY);
   const settings = local[API_SETTINGS_KEY];
+  if (settings?.mode === "local") {
+    const saved = await chrome.storage.local.get("localProfiles");
+    const raw = (saved.localProfiles || []).find((item) => item.id === settings.selectedProfileId);
+    if (!raw) throw new Error("Create and select your local profile in Settings before scanning.");
+    return { ...validateProfile(raw, settings.selectedProfileId), profileSource: "local", profileOrigin: null, profileApiMs: 0 };
+  }
   if (!settings?.origin) {
     const dev = await chrome.storage.local.get("developmentProfileEnabled");
     if (dev.developmentProfileEnabled !== true) throw new Error("Select a profile in Settings before scanning. For offline testing, explicitly enable the fictional development profile.");
@@ -166,8 +233,8 @@ async function getSelectedProfile() {
   if (!settings.selectedProfileId) throw new Error("Select a POD-16 profile in Settings before scanning.");
   try {
     const apiStartedAt = performance.now();
-    const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token: session[API_TOKEN_KEY], path: `/${validProfileId(settings.selectedProfileId)}` }));
-    return { ...profile, profileSource: "pod16", profileApiMs: Math.round((performance.now() - apiStartedAt) * 100) / 100 };
+    const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token: session[API_TOKEN_KEY], path: `/${validProfileId(settings.selectedProfileId)}` }), settings.selectedProfileId);
+    return { ...profile, profileSource: "pod16", profileOrigin: settings.origin, profileApiMs: Math.round((performance.now() - apiStartedAt) * 100) / 100 };
   } catch (error) {
     await clearPending();
     if (/session expired|key was rejected/i.test(String(error?.message))) await chrome.storage.session.remove(API_TOKEN_KEY);
@@ -202,7 +269,10 @@ async function dispatchMemory(message) {
     return { type: MESSAGE.MEMORY_DELETE, rules };
   }
   if (typeof message.profileKey !== "string" || !/^[a-zA-Z0-9_.-]{1,80}$/.test(message.profileKey)) throw new Error("Enter a valid profile fact key.");
-  rules[index] = { ...rules[index], profileKey: message.profileKey, updatedAt: new Date().toISOString() };
+  const profile = await getSelectedProfile();
+  if (profile.id !== rules[index].profileId || profile.profileSource !== rules[index].profileSource || (profile.profileOrigin ?? null) !== rules[index].profileOrigin) throw new Error("Select this rule's original profile and source before editing it.");
+  const fact = profile.facts.find((item) => item.key === message.profileKey);
+  rules[index] = { ...rules[index], factFingerprint: fact ? await fingerprintFact(fact) : null, profileKey: message.profileKey, updatedAt: new Date().toISOString() };
   await writeMemoryRules(rules);
   return { type: MESSAGE.MEMORY_EDIT, rules };
 }
@@ -220,7 +290,15 @@ function validateMemoryMessage(message) {
 
 async function getMemoryRules() {
   const saved = await chrome.storage.local.get(MEMORY_RULES_KEY);
-  return Array.isArray(saved[MEMORY_RULES_KEY]) ? saved[MEMORY_RULES_KEY].filter(isValidMemoryRule) : [];
+  const rules = (Array.isArray(saved[MEMORY_RULES_KEY]) ? saved[MEMORY_RULES_KEY] : []).filter(isValidMemoryRule).map((rule) => ({
+    id: rule.id, origin: rule.origin, formFingerprint: rule.formFingerprint, fieldFingerprint: rule.fieldFingerprint,
+    fieldDescriptor: { kind: rule.fieldDescriptor.kind, inputType: rule.fieldDescriptor.inputType, semanticFingerprint: rule.fieldFingerprint },
+    profileId: rule.profileId, profileSource: rule.profileSource, profileOrigin: rule.profileOrigin ?? null,
+    profileKey: rule.profileKey, factFingerprint: rule.factFingerprint ?? null, ruleVersion: rule.ruleVersion,
+    createdAt: rule.createdAt, updatedAt: rule.updatedAt
+  }));
+  if (saved[MEMORY_RULES_KEY] && JSON.stringify(rules) !== JSON.stringify(saved[MEMORY_RULES_KEY])) await writeMemoryRules(rules);
+  return rules;
 }
 async function writeMemoryRules(rules) { await chrome.storage.local.set({ [MEMORY_RULES_KEY]: rules }); }
 
@@ -229,7 +307,7 @@ function fieldSemanticDescriptor(field) {
     label: field.label, ariaLabels: field.ariaLabels || [], instructions: field.instructions || [],
     autocomplete: field.autocomplete || "", name: field.name || "", domId: field.domId || "",
     placeholder: field.placeholder || "", context: field.context || "", kind: field.kind,
-    inputType: field.inputType || "", multiple: Boolean(field.multiple),
+    inputType: field.inputType || "", formIdentity: field.formIdentity || null, multiple: Boolean(field.multiple),
     maxLength: Number.isInteger(field.maxLength) ? field.maxLength : -1,
     eligible: Boolean(field.eligible), optionLabels: (field.options || []).map((option) => option.label)
   };
@@ -237,8 +315,8 @@ function fieldSemanticDescriptor(field) {
 function formFingerprintMaterial(fields) {
   return fields.map((field) => ({ ...fieldSemanticDescriptor(field), optionValues: (field.options || []).map((option) => option.value) }));
 }
-async function fingerprintForm(fields) {
-  const bytes = new TextEncoder().encode(JSON.stringify(formFingerprintMaterial(fields)));
+async function fingerprintForm(fields, targetUrl) {
+  const bytes = new TextEncoder().encode(JSON.stringify({ targetUrl, fields: formFingerprintMaterial(fields) }));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
@@ -251,11 +329,12 @@ function isValidMemoryRule(rule) {
   return isObject(rule) && typeof rule.id === "string" && typeof rule.origin === "string" &&
     typeof rule.formFingerprint === "string" && typeof rule.fieldFingerprint === "string" &&
     isObject(rule.fieldDescriptor) && typeof rule.profileId === "string" &&
-    ["pod16", "development"].includes(rule.profileSource) && typeof rule.profileKey === "string" &&
-    rule.ruleVersion === 1;
+    ["pod16", "development", "local"].includes(rule.profileSource) && typeof rule.profileKey === "string" &&
+    [1, 2].includes(rule.ruleVersion) && (rule.ruleVersion === 1 || (rule.profileSource !== "pod16" ? rule.profileOrigin === null : typeof rule.profileOrigin === "string"));
 }
 async function saveRememberedRule(pending, field, row) {
   if (!row.profileKey || row.directAnswer || !pending.origin || !pending.profileId) throw new Error("This mapping cannot be remembered.");
+  if (!uniqueField(pending.fields, field)) throw new Error("Indistinguishable fields require review; this correction cannot be remembered.");
   const fact = pending.facts.find((item) => item.key === row.profileKey);
   if (!fact?.value) throw new Error("The selected profile fact is unavailable and cannot be remembered.");
   const mapped = formatSelectedFact(field, fact);
@@ -263,32 +342,44 @@ async function saveRememberedRule(pending, field, row) {
   if (mapped.status !== MATCH_STATUS.MATCHED || /conflict|application question|team leader/i.test(currentMeaning.reason || "")) {
     throw new Error("This field meaning conflicts with the selected fact, so the mapping cannot be remembered.");
   }
+  const fieldFingerprint = await fingerprintField(field);
   const rule = {
     id: crypto.randomUUID(), origin: pending.origin, formFingerprint: pending.formFingerprint,
-    fieldFingerprint: await fingerprintField(field), fieldDescriptor: fieldSemanticDescriptor(field),
-    profileId: pending.profileId, profileSource: pending.profileSource, profileKey: row.profileKey,
-    ruleVersion: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    fieldFingerprint, fieldDescriptor: { kind: field.kind, inputType: field.inputType, semanticFingerprint: fieldFingerprint },
+    factFingerprint: await fingerprintFact(fact),
+    profileId: pending.profileId, profileSource: pending.profileSource, profileOrigin: pending.profileOrigin, profileKey: row.profileKey,
+    ruleVersion: 2, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
   const rules = await getMemoryRules();
   const existing = rules.findIndex((item) => item.origin === rule.origin && item.profileId === rule.profileId &&
-    item.profileSource === rule.profileSource && item.formFingerprint === rule.formFingerprint && item.fieldFingerprint === rule.fieldFingerprint);
+    item.profileSource === rule.profileSource && item.profileOrigin === rule.profileOrigin && item.formFingerprint === rule.formFingerprint && item.fieldFingerprint === rule.fieldFingerprint);
   if (existing >= 0) rule.id = rules[existing].id;
   if (existing >= 0) rules[existing] = rule; else rules.push(rule);
   await writeMemoryRules(rules);
   return rule.id;
 }
+async function fingerprintFact(fact) {
+  const metadata = { key: fact.key, label: fact.label, type: fact.type, aliases: fact.aliases || [], datePrecision: fact.datePrecision ?? fact.date_precision ?? null, source: fact.source };
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(metadata)));
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
 async function removeMemoryRule(id) {
   const rules = await getMemoryRules();
   await writeMemoryRules(rules.filter((rule) => rule.id !== id));
 }
-async function findRememberedRule(rules, { origin, profile, formFingerprint, field, facts }) {
+function uniqueField(fields, field) {
+  const descriptor = JSON.stringify(fieldSemanticDescriptor(field));
+  return fields.filter((item) => JSON.stringify(fieldSemanticDescriptor(item)) === descriptor).length === 1;
+}
+async function findRememberedRule(rules, { origin, profile, formFingerprint, field, facts, fields }) {
+  if (!uniqueField(fields, field)) return null;
   const fieldFingerprint = await fingerprintField(field);
-  const rule = rules.find((item) => item.origin === origin && item.profileId === profile.id &&
-    item.profileSource === profile.profileSource && item.formFingerprint === formFingerprint &&
-    item.fieldFingerprint === fieldFingerprint && JSON.stringify(item.fieldDescriptor) === JSON.stringify(fieldSemanticDescriptor(field)));
+  const rule = rules.find((item) => item.ruleVersion === 2 && item.origin === origin && item.profileId === profile.id &&
+    item.profileSource === profile.profileSource && item.profileOrigin === (profile.profileOrigin ?? null) && item.formFingerprint === formFingerprint &&
+    item.fieldFingerprint === fieldFingerprint);
   if (!rule) return null;
   const fact = facts.find((item) => item.key === rule.profileKey && item.value);
-  if (!fact) return null;
+  if (!fact || rule.factFingerprint !== await fingerprintFact(fact)) return null;
   const proposal = formatSelectedFact(field, fact);
   const detected = matchField(field, facts);
   if (proposal.status !== MATCH_STATUS.MATCHED ||
@@ -297,7 +388,12 @@ async function findRememberedRule(rules, { origin, profile, formFingerprint, fie
 }
 async function hasStaleRule(rules, { origin, profile, formFingerprint, field, facts }) {
   const fieldFingerprint = await fingerprintField(field);
-  const scoped = rules.filter((item) => item.origin === origin && item.profileId === profile.id && item.profileSource === profile.profileSource);
+  const scoped = rules.filter((item) => item.origin === origin && item.profileId === profile.id && item.profileSource === profile.profileSource && (item.ruleVersion === 1 || item.profileOrigin === (profile.profileOrigin ?? null)));
+  if (scoped.some((item) => item.ruleVersion !== 2)) return true;
+  for (const item of scoped) {
+    const fact = facts.find((candidate) => candidate.key === item.profileKey);
+    if (item.fieldFingerprint === fieldFingerprint && (!fact || item.factFingerprint !== await fingerprintFact(fact))) return true;
+  }
   if (scoped.some((item) => item.formFingerprint !== formFingerprint || item.fieldFingerprint !== fieldFingerprint)) return true;
   return scoped.some((item) => {
     const fact = facts.find((candidate) => candidate.key === item.profileKey && candidate.value);
@@ -310,21 +406,33 @@ async function hasStaleRule(rules, { origin, profile, formFingerprint, field, fa
 
 async function dispatch(message) {
   await sessionReady;
-  if ([MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
-    MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE, MESSAGE.DEV_PROFILE_SET].includes(message.type)) return dispatchProfileApi(message);
+  if ([MESSAGE.LOCAL_PROFILE_ENABLE, MESSAGE.LOCAL_PROFILE_DELETE, MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
+    MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE, MESSAGE.DEV_PROFILE_SET].includes(message.type)) {
+    const action = profileActions.then(() => dispatchProfileApi(message));
+    profileActions = action.catch(() => {});
+    return action;
+  }
   if ([MESSAGE.MEMORY_LIST, MESSAGE.MEMORY_EDIT, MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_CLEAR].includes(message.type)) return dispatchMemory(message);
   if (message.type === MESSAGE.SCAN_ACTIVE_TAB) return scanActiveTab();
   if (message.type === MESSAGE.GET_PREVIEW) return previewResponse(await loadPending());
-  if (message.type === MESSAGE.UPDATE_PREVIEW) return updatePreview(message);
+  if (message.type === MESSAGE.UPDATE_PREVIEW) {
+    const update = previewUpdates.then(() => updatePreview(message));
+    previewUpdates = update.catch(() => {});
+    return update;
+  }
   if (message.type === MESSAGE.CANCEL_PREVIEW) {
+    const pending = await loadPending();
+    if (pending) requirePreviewVersion(message, pending);
     await clearPending();
     return { type: MESSAGE.GET_PREVIEW, pending: false, cancelled: true };
   }
-  if (message.type === MESSAGE.APPROVE_AND_FILL) return approveAndFill();
+  if (message.type === MESSAGE.APPROVE_AND_FILL) return approveAndFill(message);
   return { type: MESSAGE.WORKFLOW_ERROR, error: "Unsupported workflow request." };
 }
 
 async function scanActiveTab() {
+  const epoch = ++workflowEpoch;
+  await chrome.storage.session.remove(SESSION_KEY);
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id || !tab.url) throw new Error("No active page is available to scan.");
   if (!/^https?:\/\//i.test(tab.url)) throw new Error("This browser page is restricted. Open a regular HTTP or HTTPS page.");
@@ -336,30 +444,32 @@ async function scanActiveTab() {
   const result = await chrome.tabs.sendMessage(tab.id, { type: MESSAGE.SCAN_PAGE }, { documentId: topDocument.documentId });
   if (!isMessageType(result, MESSAGE.SCAN_RESULT) || !Array.isArray(result.fields)) throw new Error("The page returned an invalid scan result. Try again on a standard form page.");
 
+  if (result.documentUrl !== tab.url) throw new Error("The page navigated during scan. Review a fresh scan.");
   const now = Date.now();
   const fields = result.fields.filter(validDescriptor);
-  const formFingerprint = await fingerprintForm(fields);
+  const formFingerprint = await fingerprintForm(fields, tab.url);
   const memoryRules = await getMemoryRules();
   const pending = {
-    version: 1, token: crypto.randomUUID(), createdAt: now, expiresAt: now + PREVIEW_TTL_MS,
-    tabId: tab.id, documentId: topDocument.documentId, origin: new URL(tab.url).origin,
+    version: 1, revision: 0, token: crypto.randomUUID(), createdAt: now, expiresAt: now + PREVIEW_TTL_MS,
+    targetUrl: tab.url, tabId: tab.id, documentId: topDocument.documentId, origin: new URL(tab.url).origin,
     profileId: profile.id, profileVersion: profile.version, profileSource: profile.profileSource,
-    profileName: profile.name, notices: result.summary?.notices || [], profileOrigin: profile.profileSource === "pod16" ? (await chrome.storage.local.get(API_SETTINGS_KEY))[API_SETTINGS_KEY].origin : null,
+    profileName: profile.name, notices: result.summary?.notices || [], profileOrigin: profile.profileOrigin ?? null,
     facts: profile.facts, fields, formFingerprint,
     rows: await Promise.all(fields.map(async (field) => {
       const suggestion = matchField(field, profile.facts);
-      const memoryContext = { origin: new URL(tab.url).origin, profile, formFingerprint, field, facts: profile.facts };
+      const memoryContext = { origin: new URL(tab.url).origin, profile, formFingerprint, field, facts: profile.facts, fields };
       const remembered = await findRememberedRule(memoryRules, memoryContext);
       const stale = !remembered && await hasStaleRule(memoryRules, memoryContext);
       return { fieldId: field.id, profileKey: remembered?.profileKey || suggestion.profileKey, suggestionKey: suggestion.profileKey,
         suggestionStatus: suggestion.status, suggestionReason: suggestion.reason, directAnswer: Boolean(suggestion.directAnswer), projectChoice: Boolean(suggestion.projectChoice), mappingChanged: false,
         rememberedRuleId: remembered?.id || null, memoryStatus: remembered ? "suggested" : stale ? "rejected" : "",
-        memoryReason: remembered ? "Remembered mapping suggestion from this website and form. Review it and approve any fill." : stale ? "A remembered mapping was rejected because its field meaning, form context or available profile facts are now incompatible. Review the mapping." : "",
+        memoryReason: remembered ? "Remembered mapping suggestion from this website and form. Review it and approve any fill." : stale ? "A remembered mapping was rejected because its rule version, page/source identity, field meaning or available profile facts are incompatible. Review the mapping." : "",
         rememberMapping: false, valueOverride: null, include: false, overwrite: false };
     }))
   };
   pending.scanAndMatchMs = Math.round((performance.now() - scanStartedAt) * 100) / 100;
   pending.profileApiMs = profile.profileApiMs ?? null;
+  if (epoch !== workflowEpoch) throw new Error("The scan was superseded or cancelled. Scan again.");
   await savePending(pending);
   return previewResponse(pending);
 }
@@ -368,7 +478,8 @@ async function updatePreview(message) {
   if (typeof message.fieldId !== "string" || !isObject(message.changes) || Object.keys(message.changes).length !== 1) throw new Error("The preview change was invalid.");
   const pending = await loadPending();
   if (!pending) throw new Error("This preview expired. Scan the page again.");
-  if (pending.filling) throw new Error("This preview is being processed. Wait for its result or cancel it.");
+  requirePreviewVersion(message, pending);
+  if (pending.filling || activeFillToken) throw new Error("This preview is being processed. Wait for its result or cancel it.");
   const row = pending.rows.find((item) => item.fieldId === message.fieldId);
   const field = pending.fields.find((item) => item.id === message.fieldId);
   if (!row || !field) throw new Error("That field is no longer in this preview.");
@@ -412,14 +523,16 @@ async function updatePreview(message) {
     if (typeof value !== "boolean" || (value && !field.hasValue)) throw new Error("Overwrite approval is available only for fields that already contain a value.");
     row.overwrite = value;
   } else throw new Error("This preview change is not allowed.");
+  await assertCurrentPreview(pending);
+  pending.revision += 1;
   await savePending(pending);
-  return { type: MESSAGE.UPDATE_PREVIEW, pending: true, row: previewRow(row, field, pending.facts) };
+  return { type: MESSAGE.UPDATE_PREVIEW, pending: true, previewToken: pending.token, previewRevision: pending.revision, row: previewRow(row, field, pending.facts) };
 }
 
 function previewResponse(pending) {
   if (!pending) return { type: MESSAGE.GET_PREVIEW, pending: false };
   return {
-    type: MESSAGE.GET_PREVIEW, pending: true,
+    type: MESSAGE.GET_PREVIEW, pending: true, previewToken: pending.token, previewRevision: pending.revision,
     target: { tabId: pending.tabId, origin: pending.origin, documentId: pending.documentId },
     profile: { id: pending.profileId, name: pending.profileName, version: pending.profileVersion, source: pending.profileSource },
     factOptions: pending.facts.map(({ key, label, type, source }) => ({ key, label, type, source })),
@@ -470,25 +583,31 @@ function previewRow(row, field, facts) {
   };
 }
 
-async function approveAndFill() {
+function requirePreviewVersion(message, pending) {
+  if (message.previewToken !== pending.token || message.previewRevision !== pending.revision) throw new Error("The displayed preview is stale. Scan again and review before approving.");
+}
+async function assertCurrentPreview(pending) {
+  const current = await loadPending();
+  if (!current || current.token !== pending.token || current.revision !== pending.revision) throw new Error("The preview changed, expired or was cancelled. Scan and review again.");
+}
+async function approveAndFill(message) {
   const pending = await loadPending();
   if (!pending) throw new Error("This preview expired. Scan the page again before filling.");
-  if (pending.profileSource === "pod16") {
-    const session = await chrome.storage.session.get(API_TOKEN_KEY);
-    if (!session[API_TOKEN_KEY]) { await clearPending(); throw new Error("POD-16 requires sign-in again. This preview was cleared."); }
-    try {
-      const current = validateProfile(await fetchProfileApi({ origin: pending.profileOrigin, token: session[API_TOKEN_KEY], path: `/${validProfileId(pending.profileId)}` }));
-      if (current.version !== pending.profileVersion) { await clearPending(); throw new Error("The POD-16 profile changed after preview. Scan again to review current facts."); }
-    } catch (error) {
-      await clearPending();
-      if (/session expired|key was rejected/i.test(String(error?.message))) await chrome.storage.session.remove(API_TOKEN_KEY);
-      throw error;
-    }
-  } else if (pending.profileVersion !== DEVELOPMENT_PROFILE.version) {
-    await clearPending();
-    throw new Error("The profile changed after preview. Scan the page again to review current facts.");
-  }
+  requirePreviewVersion(message, pending);
   if (pending.filling || activeFillToken) throw new Error("This preview is already being processed.");
+  activeFillToken = pending.token;
+  try { return await performApprovedFill(pending); }
+  finally { activeFillToken = null; }
+}
+async function performApprovedFill(pending) {
+  const current = await getSelectedProfile();
+  await assertCurrentPreview(pending);
+  if (current.id !== pending.profileId || current.profileSource !== pending.profileSource ||
+      (current.profileOrigin ?? null) !== pending.profileOrigin || current.version !== pending.profileVersion ||
+      JSON.stringify(current.facts) !== JSON.stringify(pending.facts)) {
+    await clearPending(pending.token);
+    throw new Error("The profile changed after preview. Scan again to review current facts.");
+  }
   const selected = pending.rows.filter((row) => row.include);
   if (!selected.length) throw new Error("Select at least one field before approving the fill.");
   const valid = [];
@@ -507,25 +626,27 @@ async function approveAndFill() {
     else valid.push({ fieldId: row.fieldId, value: view.value, overwrite: row.overwrite, expected: field });
   }
   if (!valid.length) return { type: MESSAGE.FILL_RESULT, origin: pending.origin, outcomes, pending: true };
+  if (valid.length > 100) throw new Error("Select at most 100 fields per approval.");
   pending.filling = true;
   activeFillToken = pending.token;
   await savePending(pending);
   try {
     const tab = await chrome.tabs.get(pending.tabId);
-    if (!tab?.url || new URL(tab.url).origin !== pending.origin) throw new Error("The target page changed. Scan and review the current page again.");
+    if (!tab?.url || tab.url !== pending.targetUrl || new URL(tab.url).origin !== pending.origin) throw new Error("The target page changed. Scan and review the current page again.");
+    await assertCurrentPreview(pending);
     let result;
     try {
-      result = await chrome.tabs.sendMessage(pending.tabId, { type: MESSAGE.FILL_APPROVED, items: valid }, { documentId: pending.documentId });
+      result = await chrome.tabs.sendMessage(pending.tabId, { type: MESSAGE.FILL_APPROVED, items: valid, expectedFields: pending.fields, targetUrl: pending.targetUrl }, { documentId: pending.documentId });
     } catch (_error) {
       throw new Error("The target document stopped responding during the fill. Some fields may have been filled; review the form manually before trying again.");
     }
     if (!isMessageType(result, MESSAGE.FILL_RESULT) || !validOutcomes(result.outcomes, valid)) {
       throw new Error("The target document did not confirm every field. Some fields may have been filled; review the form manually before trying again.");
     }
-    await clearPending();
+    await clearPending(pending.token);
     return { type: MESSAGE.FILL_RESULT, origin: pending.origin, outcomes: [...outcomes, ...result.outcomes] };
   } catch (error) {
-    await clearPending();
+    await clearPending(pending.token);
     throw error;
   } finally { activeFillToken = null; }
 }
@@ -556,12 +677,27 @@ async function loadPending() {
   const record = await chrome.storage.session.get(SESSION_KEY);
   const pending = record[SESSION_KEY];
   if (!pending) return null;
+  if (pending.filling && activeFillToken !== pending.token) {
+    await clearPending(pending.token);
+    throw new Error("A fill was interrupted by a worker restart. Some fields may have changed; review the page before rescanning.");
+  }
   if (pending.expiresAt <= Date.now()) { await clearPending(); return null; }
   return pending;
 }
 
-async function savePending(pending) { await chrome.storage.session.set({ [SESSION_KEY]: pending }); }
-async function clearPending() { await chrome.storage.session.remove(SESSION_KEY); }
+async function savePending(pending) {
+  await chrome.storage.session.set({ [SESSION_KEY]: pending });
+  await chrome.alarms.create(EXPIRY_ALARM, { when: pending.expiresAt });
+}
+async function clearPending(token) {
+  if (token) {
+    const saved = await chrome.storage.session.get(SESSION_KEY);
+    if (saved[SESSION_KEY]?.token !== token) return;
+  }
+  workflowEpoch += 1;
+  await chrome.storage.session.remove(SESSION_KEY);
+  await chrome.alarms.clear(EXPIRY_ALARM);
+}
 
 function readableError(error) {
   const message = String(error?.message || "");

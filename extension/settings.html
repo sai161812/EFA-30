@@ -10,8 +10,13 @@
   <main>
     <h1>Settings</h1>
     <p id="status" role="status" aria-live="polite">Loading profile settings…</p>
+    <section aria-labelledby="local-heading">
+      <h2 id="local-heading">Use your own data locally</h2>
+      <p>No server or account required. Enable local profiles, create a profile below, add your facts, and save. Data stays in this browser's extension storage (not encrypted or synced); uninstalling the extension removes it. Do not store passwords or payment credentials.</p>
+      <button id="enable-local" type="button">Use local profiles</button>
+    </section>
     <section aria-labelledby="connection-heading">
-      <h2 id="connection-heading">POD-16 connection</h2>
+      <h2 id="connection-heading">Optional POD-16 connection</h2>
       <label for="api-origin">API origin</label>
       <input id="api-origin" type="url" autocomplete="url" value="http://127.0.0.1:8000" required>
       <p class="muted">This build allows the exact local development origin http://127.0.0.1:8000. The POD-16 checkout does not document a production address.</p>
@@ -40,10 +45,10 @@
         <h3 id="editor-title"></h3>
         <label for="profile-name">Profile name</label>
         <input id="profile-name" maxlength="120">
-        <p class="muted">Facts are saved only to the selected POD-16 profile. Phone numbers and postal codes remain text. Dates keep their stated precision.</p>
+        <p class="muted">Facts are saved to the profile being edited, in local browser storage or POD-16 according to your selected source. Phone numbers and postal codes remain text. Dates keep their stated precision.</p>
         <p class="notice">Project import from POD-16 is not available. You can add a project snapshot manually only after you have approved its contents.</p>
         <div id="fact-list" class="facts"></div>
-        <div class="actions"><button id="add-fact" class="secondary" type="button">Add fact</button><button id="save-profile" type="button">Save profile changes</button></div>
+        <div class="actions"><button id="add-fact" class="secondary" type="button">Add fact</button><button id="save-profile" type="button">Save profile changes</button><button id="delete-local-profile" class="secondary" type="button" hidden>Delete this local profile</button></div>
       </div>
     </section>
     <section aria-labelledby="memory-heading">

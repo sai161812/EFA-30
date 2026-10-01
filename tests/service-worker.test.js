@@ -8,29 +8,33 @@ function makeRuntime() {
   const stored = { "local:developmentProfileEnabled": true };
   const calls = { query: 0, inject: 0, fills: 0, lastFillTarget: null };
   let activeTab = { id: 7, url: "http://localhost:8000/" };
+  let targetTab = activeTab;
   let documentAvailable = true;
   let onMessage;
+  let onAlarm;
   const scanResult = {
-    type: "pluma/scan-result",
+    type: "pluma/scan-result", documentUrl: "http://localhost:8000/",
     fields: [{ id: "field-1", kind: "input", label: "Email", ariaLabels: [], instructions: [], autocomplete: "email", name: "email", domId: "", placeholder: "", context: "", inputType: "email", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0 }],
     summary: { total: 1, eligible: 1, blocked: 0 }
   };
   globalThis.chrome = {
+    alarms: { onAlarm: { addListener(callback) { onAlarm = callback; } }, async create(name, info) { calls.alarm = { name, ...info }; }, async clear() { calls.alarm = null; } },
     runtime: { id: "extension-test", onMessage: { addListener(callback) { onMessage = callback; } } },
     storage: { local: {
-      async get(key) { return { [key]: stored[`local:${key}`] }; },
-      async set(record) { for (const [key, value] of Object.entries(record)) stored[`local:${key}`] = value; },
+      async setAccessLevel({ accessLevel }) { assert.equal(accessLevel, "TRUSTED_CONTEXTS"); },
+      async get(key) { return structuredClone({ [key]: stored[`local:${key}`] }); },
+      async set(record) { for (const [key, value] of Object.entries(record)) stored[`local:${key}`] = structuredClone(value); },
       async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete stored[`local:${key}`]; }
     }, session: {
       async setAccessLevel({ accessLevel }) { assert.equal(accessLevel, "TRUSTED_CONTEXTS"); },
-      async get(key) { return { [key]: stored[key] }; },
-      async set(record) { Object.assign(stored, record); },
+      async get(key) { return structuredClone({ [key]: stored[key] }); },
+      async set(record) { Object.assign(stored, structuredClone(record)); },
       async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete stored[key]; }
     } },
     permissions: { async contains({ origins }) { return origins.length === 1 && origins[0] === "http://127.0.0.1:8000/*"; } },
     tabs: {
       async query() { calls.query += 1; return [activeTab]; },
-      async get(tabId) { assert.equal(tabId, 7); return activeTab; },
+      async get(tabId) { assert.equal(tabId, 7); return targetTab; },
       async sendMessage(tabId, message, options) {
         assert.equal(tabId, 7);
         assert.equal(options.documentId, "document-a");
@@ -46,7 +50,7 @@ function makeRuntime() {
     },
     scripting: { async executeScript({ target }) { calls.inject += 1; assert.equal(target.tabId, 7); return [{ frameId: 0, documentId: "document-a" }]; } }
   };
-  return { stored, calls, setActiveTab(value) { activeTab = value; }, setDocumentAvailable(value) { documentAvailable = value; }, setPrefilled(value) { scanResult.fields[0].hasValue = value; }, setFields(fields) { scanResult.fields = fields; scanResult.summary = { total: fields.length, eligible: fields.filter((field) => field.eligible).length, blocked: fields.filter((field) => !field.eligible).length }; }, getListener() { return onMessage; } };
+  return { stored, calls, fireAlarm() { return onAlarm({name:"preview-expiry"}); }, setActiveTab(value) { activeTab = value; if (value.id === 7) { targetTab = value; scanResult.documentUrl = value.url; } }, setDocumentAvailable(value) { documentAvailable = value; }, setPrefilled(value) { scanResult.fields[0].hasValue = value; }, setFields(fields) { scanResult.fields = fields; scanResult.summary = { total: fields.length, eligible: fields.filter((field) => field.eligible).length, blocked: fields.filter((field) => !field.eligible).length }; }, getListener() { return onMessage; } };
 }
 
 async function loadWorker(runtime, name) {
@@ -54,6 +58,9 @@ async function loadWorker(runtime, name) {
 }
 
 function send(runtime, message, sender = popupSender) {
+  if (["pluma/update-preview", "pluma/approve-and-fill", "pluma/cancel-preview"].includes(message.type)) {
+    message = { previewToken: runtime.stored.pendingPreview?.token, previewRevision: runtime.stored.pendingPreview?.revision ?? 0, ...message };
+  }
   return new Promise((resolve, reject) => {
     const keepAlive = runtime.getListener()(message, sender, resolve);
     if (!keepAlive) reject(new Error("Service worker did not keep the response channel open."));
@@ -290,7 +297,7 @@ test("remembered mappings are scoped suggestions, store no values, and reject st
   assert.equal(rules[0].origin, "http://localhost:8000");
   assert.equal(rules[0].profileId, "professional-demo");
   assert.equal(rules[0].profileKey, "personalEmail");
-  assert.equal(rules[0].ruleVersion, 1);
+  assert.equal(rules[0].ruleVersion, 2);
   assert.equal(Object.hasOwn(rules[0], "value"), false);
   const savedText = JSON.stringify(rules);
   assert.equal(savedText.includes("avery.personal"), false);
@@ -364,4 +371,208 @@ test("development profile requires an explicit Settings choice", async () => {
   const scan = await send(runtime, { type: "pluma/scan-active-tab" });
   assert.equal(scan.profile.source, "development");
   assert.equal(scan.pending, true);
+});
+
+test("approval from an obsolete preview cannot authorize a newer preview", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "stale-preview-token");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  const oldToken = runtime.stored.pendingPreview.token;
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: true } });
+  const result = await send(runtime, { type: "pluma/approve-and-fill", previewToken: oldToken });
+  assert.equal(result.type, "pluma/workflow-error"); assert.equal(runtime.calls.fills, 0);
+});
+
+test("cancel while target validation is waiting prevents disclosure", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "cancel-during-approval");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: true } });
+  let release, started;
+  const reached = new Promise((resolve) => { started = resolve; });
+  chrome.tabs.get = async () => { started(); return new Promise((resolve) => { release = resolve; }); };
+  const approval = send(runtime, { type: "pluma/approve-and-fill" });
+  await reached;
+  await send(runtime, { type: "pluma/cancel-preview" });
+  release({ id: 7, url: "http://localhost:8000/" });
+  const result = await approval;
+  assert.equal(result.type, "pluma/workflow-error"); assert.equal(runtime.calls.fills, 0);
+});
+
+test("configuring an API invalidates an existing fictional preview", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "configure-invalidates-demo");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  await send(runtime, { type: "pluma/api-configure", origin: "http://127.0.0.1:8000" }, settingsSender);
+  assert.equal(runtime.stored.pendingPreview, undefined);
+});
+
+test("a profile endpoint cannot silently return another profile identity", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "wrong-profile-id");
+  const originalFetch = globalThis.fetch;
+  runtime.stored["local:profileApiSettings"] = { origin: "http://127.0.0.1:8000", selectedProfileId: "123e4567-e89b-12d3-a456-426614174000" };
+  runtime.stored.profileApiToken = "synthetic-token";
+  globalThis.fetch = async () => new Response(JSON.stringify({ id: "123e4567-e89b-12d3-a456-426614174999", profile_type: "personal", name: "Wrong person", version: 1, facts: [] }), { status: 200 });
+  try {
+    const result = await send(runtime, { type: "pluma/scan-active-tab" });
+    assert.equal(result.type, "pluma/workflow-error"); assert.equal(runtime.calls.inject, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("indistinguishable repeated fields cannot share a remembered correction", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "ambiguous-memory-fields");
+  const initial = await send(runtime, { type: "pluma/scan-active-tab" });
+  const field = initial.rows[0].field;
+  runtime.setFields([field, { ...field, id: "field-2" }]);
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { profileKey: "personalEmail" } });
+  const result = await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { rememberMapping: true } });
+  assert.equal(result.type, "pluma/workflow-error");
+});
+
+test("a different active tab never receives the original target's approved values", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "actual-tab-switch");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: true } });
+  runtime.setActiveTab({ id: 8, url: "https://other.example/" });
+  const result = await send(runtime, { type: "pluma/approve-and-fill" });
+  assert.equal(result.type, "pluma/fill-result"); assert.equal(runtime.calls.lastFillTarget.tabId, 7);
+});
+
+test("same-document SPA navigation invalidates approval", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "spa-navigation");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: true } });
+  runtime.setActiveTab({ id: 7, url: "http://localhost:8000/next-step" });
+  const result = await send(runtime, { type: "pluma/approve-and-fill" });
+  assert.equal(result.type, "pluma/workflow-error"); assert.equal(runtime.calls.fills, 0);
+});
+
+test("concurrent edits based on one revision cannot silently overwrite each other", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "concurrent-preview-updates");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  const results = await Promise.all([
+    send(runtime, {type:"pluma/update-preview",fieldId:"field-1",changes:{include:true}}),
+    send(runtime, {type:"pluma/update-preview",fieldId:"field-1",changes:{valueOverride:"different@example.test"}})
+  ]);
+  assert.equal(results.filter((result) => result.type === "pluma/workflow-error").length, 1);
+  assert.equal(runtime.stored.pendingPreview.rows[0].valueOverride, null);
+});
+
+test("expiry alarm clears profile data without reopening the popup", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "expiry-alarm");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(runtime.calls.alarm.when, runtime.stored.pendingPreview.expiresAt);
+  runtime.stored.pendingPreview.expiresAt = 0;
+  await runtime.fireAlarm();
+  assert.equal(runtime.stored.pendingPreview, undefined);
+});
+
+test("restart during a fill reports uncertainty and never retries automatically", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "before-interrupted-fill");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  runtime.stored.pendingPreview.filling = true;
+  await loadWorker(runtime, "after-interrupted-fill");
+  const result = await send(runtime, { type: "pluma/get-preview" });
+  assert.equal(result.type, "pluma/workflow-error"); assert.match(result.error, /interrupted/);
+  assert.equal(runtime.calls.fills, 0); assert.equal(runtime.stored.pendingPreview, undefined);
+});
+
+test("correction memory stores hashes, and does not cross same-origin page identities", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "correction-page-scope");
+  const initial = await send(runtime, {type:"pluma/scan-active-tab"});
+  runtime.setFields([{...initial.rows[0].field, instructions:["Page annotation content"]}]);
+  await send(runtime, {type:"pluma/scan-active-tab"});
+  await send(runtime, {type:"pluma/update-preview",fieldId:"field-1",changes:{profileKey:"personalEmail"}});
+  await send(runtime, {type:"pluma/update-preview",fieldId:"field-1",changes:{rememberMapping:true}});
+  assert.equal(JSON.stringify(runtime.stored["local:correctionMemoryRules"]).includes("Page annotation content"), false);
+  runtime.setActiveTab({id:7,url:"http://localhost:8000/another-project"});
+  const another = await send(runtime, {type:"pluma/scan-active-tab"});
+  assert.equal(another.rows[0].remembered,false);
+});
+
+test("same-version API value changes invalidate approval", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime,"same-version-fact-change");
+  const profile = {id:"123e4567-e89b-12d3-a456-426614174000",profile_type:"personal",name:"Synthetic",version:1,facts:[{key:"email",label:"Email",fact_type:"email",value:"before@example.test",source:"Synthetic",aliases:[]}]};
+  runtime.stored["local:profileApiSettings"]={origin:"http://127.0.0.1:8000",selectedProfileId:profile.id}; runtime.stored.profileApiToken="synthetic-token";
+  const original=globalThis.fetch; globalThis.fetch=async()=>new Response(JSON.stringify(profile),{status:200});
+  try {
+    await send(runtime,{type:"pluma/scan-active-tab"});
+    await send(runtime,{type:"pluma/update-preview",fieldId:"field-1",changes:{include:true}});
+    profile.facts[0].value="after@example.test";
+    const result=await send(runtime,{type:"pluma/approve-and-fill"});
+    assert.equal(result.type,"pluma/workflow-error"); assert.equal(runtime.calls.fills,0);
+  } finally {globalThis.fetch=original;}
+});
+
+test("saved rules reject changed fact meaning and another backend identity", async () => {
+  const runtime=makeRuntime(); await loadWorker(runtime,"memory-fact-source");
+  const profile={id:"123e4567-e89b-12d3-a456-426614174000",profile_type:"personal",name:"Synthetic",version:1,facts:[
+    {key:"email",label:"Email",fact_type:"email",value:"one@example.test",source:"Synthetic",aliases:[]},
+    {key:"personalEmail",label:"Personal email",fact_type:"email",value:"two@example.test",source:"Synthetic",aliases:[]}]};
+  runtime.stored["local:profileApiSettings"]={origin:"http://127.0.0.1:8000",selectedProfileId:profile.id}; runtime.stored.profileApiToken="synthetic-token";
+  const original=globalThis.fetch; globalThis.fetch=async()=>new Response(JSON.stringify(profile),{status:200});
+  try {
+    await send(runtime,{type:"pluma/scan-active-tab"});
+    await send(runtime,{type:"pluma/update-preview",fieldId:"field-1",changes:{profileKey:"personalEmail"}});
+    const saved=await send(runtime,{type:"pluma/update-preview",fieldId:"field-1",changes:{rememberMapping:true}});
+    assert.equal(saved.type,"pluma/update-preview");
+    profile.facts[1].label="Department email";
+    const changed=await send(runtime,{type:"pluma/scan-active-tab"});
+    assert.equal(changed.rows[0].remembered,false); assert.equal(changed.rows[0].memoryStatus,"rejected");
+    profile.facts[1].label="Personal email";
+    runtime.stored["local:correctionMemoryRules"][0].profileOrigin="http://127.0.0.1:9000";
+    const other=await send(runtime,{type:"pluma/scan-active-tab"}); assert.equal(other.rows[0].remembered,false);
+  } finally {globalThis.fetch=original;}
+});
+
+test("page senders cannot approve, retrieve profiles or manage correction rules", async () => {
+  const runtime=makeRuntime(); await loadWorker(runtime,"all-page-boundaries");
+  await send(runtime,{type:"pluma/scan-active-tab"});
+  await send(runtime,{type:"pluma/update-preview",fieldId:"field-1",changes:{include:true}});
+  for(const type of ["pluma/approve-and-fill","pluma/get-preview","pluma/api-status","pluma/api-list-profiles","pluma/memory-list","pluma/memory-clear"]){
+    const result=await send(runtime,{type},{id:"extension-test",url:"https://page.example/",tab:{id:7}});
+    assert.equal(result.type,"pluma/workflow-error"); assert.equal(Object.hasOwn(result,"facts"),false);
+  }
+  assert.equal(runtime.calls.fills,0);
+});
+
+
+test("local real profiles persist, require explicit selection and approval, and reject stale edits", async () => {
+  const runtime = makeRuntime();
+  await loadWorker(runtime, "local-profile-workflow");
+  const settings = (message) => send(runtime, message, settingsSender);
+  await settings({ type: "pluma/local-profile-enable" });
+  assert.equal(runtime.stored["local:developmentProfileEnabled"], false);
+  assert.equal((await send(runtime, { type: "pluma/scan-active-tab" })).type, "pluma/workflow-error");
+  const facts = [{ key: "email", label: "Email", fact_type: "email", value: "approved@example.test", source: "User approved", aliases: ["email", "email address"], date_precision: null }];
+  const created = await settings({ type: "pluma/api-create-profile", profile: { profile_type: "personal", name: "My profile", facts } });
+  const profileId = created.profile.id;
+  await settings({ type: "pluma/api-select-profile", profileId });
+  const preview = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(preview.profile.source, "local");
+  assert.equal(preview.rows[0].include, false);
+  assert.equal(runtime.calls.fills, 0);
+  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: true } });
+  await send(runtime, { type: "pluma/approve-and-fill" });
+  assert.equal(runtime.calls.lastFillTarget.items[0].value, "approved@example.test");
+  await loadWorker(runtime, "local-profile-restarted");
+  assert.equal((await send(runtime, { type: "pluma/scan-active-tab" })).profile.id, profileId);
+  const edit = { type: "pluma/api-update-profile", profileId, profile: { expected_version: 1, name: "Updated", facts } };
+  assert.equal((await settings(edit)).profile.version, 2);
+  assert.equal(runtime.stored.pendingPreview, undefined);
+  assert.equal((await settings(edit)).type, "pluma/workflow-error");
+  await settings({ type: "pluma/local-profile-delete", profileId });
+  assert.equal(runtime.stored["local:localProfiles"].length, 0);
+  assert.equal((await send(runtime, { type: "pluma/scan-active-tab" })).type, "pluma/workflow-error");
+});
+
+test("page senders cannot enable or delete local profiles", async () => {
+  const runtime = makeRuntime();
+  await loadWorker(runtime, "local-profile-page-boundary");
+  const sender = { id: "extension-test", url: "https://page.example/", tab: { id: 7 } };
+  for (const type of ["pluma/local-profile-enable", "pluma/local-profile-delete"]) {
+    let result;
+    runtime.getListener()({ type }, sender, (response) => { result = response; });
+    assert.equal(result.type, "pluma/workflow-error");
+  }
+  assert.equal(runtime.stored["local:profileApiSettings"], undefined);
 });

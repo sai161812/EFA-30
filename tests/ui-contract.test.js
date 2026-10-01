@@ -1,0 +1,53 @@
+﻿import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+import { MESSAGE, isMessageType } from "../extension/shared/contracts.js";
+
+class Element {
+  constructor() { this.children = []; this.dataset = {}; this.value = ""; }
+  append(...children) { this.children.push(...children); }
+  addEventListener() {}
+  querySelectorAll() { return []; }
+  setAttribute() {}
+}
+function harness(file, sendMessage) {
+  const elements = new Map();
+  const context = vm.createContext({ MESSAGE, isMessageType, console, setTimeout, clearTimeout,
+    chrome: { runtime: { sendMessage } }, Option: class extends Element { constructor(text, value) { super(); this.text = text; this.value = value; } },
+    document: { querySelector(selector) { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); }, createElement() { return new Element(); } }
+  });
+  const source = fs.readFileSync(new URL(`../extension/${file}`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace("void initialize();", "").replace("void loadPendingPreview();", "");
+  vm.runInContext(source, context);
+  return context;
+}
+
+test("Settings preserves normalized fact type, date precision and source timestamp", () => {
+  const ctx = harness("settings.js", async () => ({}));
+  const row = vm.runInContext('createFactRow({key:"graduationDate",type:"date",datePrecision:"day",value:"2027-05-20",updatedAt:"2026-10-01",source:"Approved"})', ctx);
+  const controls = row.children.flatMap((item) => item.children || []);
+  assert.equal(controls.find((item) => item.dataset?.key === "fact_type").value, "date");
+  assert.equal(controls.find((item) => item.dataset?.key === "date_precision").value, "day");
+  assert.ok(row.children.some((item) => item.textContent === "Last updated: 2026-10-01"));
+});
+
+test("popup refuses approval when a displayed edit failed to save", async () => {
+  const messages = [];
+  const ctx = harness("popup.js", async (message) => { messages.push(message); return {type: MESSAGE.WORKFLOW_ERROR, error:"Edit rejected"}; });
+  await vm.runInContext('(async () => { currentPreview = {previewToken:"preview-a",previewRevision:0,rows:[]}; await enqueueUpdate("field-1", {valueOverride:"displayed"}); await approve(); })()', ctx);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, MESSAGE.UPDATE_PREVIEW);
+  assert.equal(messages[0].previewToken, "preview-a");
+});
+
+test("popup approval carries the acknowledged preview revision", async () => {
+  const messages = [];
+  const ctx = harness("popup.js", async (message) => {
+    messages.push(message);
+    return message.type === MESSAGE.UPDATE_PREVIEW ? { type: MESSAGE.UPDATE_PREVIEW, previewToken:"preview-a", previewRevision:1, row:{fieldId:"field-1"} } : {type:MESSAGE.WORKFLOW_ERROR,error:"No fields"};
+  });
+  await vm.runInContext('(async () => { currentPreview = {previewToken:"preview-a",previewRevision:0,rows:[]}; await enqueueUpdate("field-1", {include:true}); await approve(); })()', ctx);
+  assert.equal(messages[1].type, MESSAGE.APPROVE_AND_FILL);
+  assert.equal(messages[1].previewRevision, 1);
+  assert.equal(messages[1].previewToken, "preview-a");
+});

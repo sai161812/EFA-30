@@ -2,13 +2,19 @@
 
 This repository contains a Chrome/Edge Manifest V3 extension and local synthetic form fixtures. It scans an authorized top-level HTTP/HTTPS page, uses deterministic field and group context, and fills only rows the user selects and approves. Current/permanent address, personal/college email, institution/company and applicant/team-leader fields keep distinct meanings. Approved project snapshots require an explicit choice; application questions require a direct per-fill answer. Native single-select and full-date controls are supported when their values are unambiguous. It never submits forms or clicks Next. Offline setup uses a fictional profile only after you explicitly enable it in Settings. It is never selected automatically or used after an API error.
 
+## Quick start with your real data
+
+See [START_HERE.md](START_HERE.md) for installation and the fact-key guide. Version 0.3.0 supports real local profiles: Settings ? **Use local profiles** ? Create ? Add facts ? Save. No source-file edits, server or API key are needed. Local facts are stored in this browser's extension storage, not encrypted or synced. The optional POD-16 and fictional demo modes remain separate, explicitly selected sources.
+
+The distribution is `dist/PLUMA-Autofill-0.3.0.zip`; extract it and load its manifest folder. 72 automated checks pass. Browser end-to-end verification remains incomplete.
+
 ## Load the extension in Chrome or Edge
 
 1. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked**.
 4. Select the repository root folder containing `manifest.json` (`D:\Workspace\DEVEL\EFA-30`).
-5. Confirm **PLUMA Autofill (Development)** appears and select its toolbar icon to open the popup.
+5. Confirm **PLUMA Autofill** appears and select its toolbar icon to open the popup.
 
 ## Start POD-16 locally
 
@@ -35,11 +41,11 @@ Stop the fixture server with `Ctrl+C`. If `py` is unavailable, run `python -m ht
 
 ## Safety and pending previews
 
-- The extension requests `activeTab`, `scripting`, `storage` and the single optional host pattern `http://127.0.0.1:8000/*`; it has no all-sites permission. A different deployment needs its exact origin declared in the manifest before reload.
+- The extension requests `activeTab`, `scripting`, `storage`, `alarms` and the single optional host pattern `http://127.0.0.1:8000/*`; it has no all-sites permission. A different deployment needs its exact origin declared in the manifest before reload.
 - Pending profile data and approval choices live in `chrome.storage.session`, available only to trusted extension contexts, and expire after ten minutes. Cancel/fill completion clears the preview. Browser restart clears the session and requires sign-in again.
-- Corrected mappings are remembered only when you opt in. A rule stores the exact website origin, hashed form fingerprint, semantic field descriptor, selected profile identity/key and rule version. It stores no entered/filled values, credentials or HTML. Reused mappings are suggestions only, remain unchecked for filling, and are rejected when the form meaning, context, type or required profile fact changes. Inspect, edit, delete or clear rules in Settings.
+- Corrected mappings are remembered only when you opt in. A rule stores the exact website origin, hashed page/form and semantic fingerprints, control kind/type, selected profile/backend identity, fact key/metadata fingerprint and rule version. It stores no entered/filled values, credentials or HTML. Reused mappings are suggestions only, remain unchecked for filling, and are rejected when the form meaning, context, type or required profile fact changes. Inspect, edit, delete or clear rules in Settings.
 - API keys never enter local/sync storage, page messages or content scripts. The service worker has fixed profile-only routes; the content script cannot request profile data or approve a fill.
-- Profile data is re-read from POD-16 before scanning and revalidated by version immediately before filling. API outage, expired authentication or version change clears the preview and requires a fresh session/review.
+- Profile data is re-read from POD-16 before scanning and revalidated by identity, backend, version and current facts immediately before filling. API outage, expired authentication or version change clears the preview and requires a fresh session/review.
 - The content script returns field descriptors and existing-value presence only. It receives selected values only in the final approved request for the recorded tab/document.
 - Hidden controls are not scanned. Password, OTP, payment/identity, signature, consent, upload, disabled and readonly controls are excluded. Existing values need explicit per-field overwrite approval.
 - `extension/matching/matcher.js` is pure and deterministic. It uses exact aliases and explicit semantic context, formats only complete stored dates, composes only known same-scope address parts, and leaves ambiguous fields unresolved. It does not fuzzy-match, split names, generate answers, infer missing facts or silently truncate values.
@@ -78,6 +84,10 @@ Run the deterministic synthetic corpus runner:
 node evaluation/evaluate.mjs
 ```
 
-The labels in `evaluation/corpus.mjs` are separate from matcher implementation. The corpus expands to 20 form runs across 10 authored template families and 200 fields, with five families held out. The runner reports cold-start precision and correct coverage, per-form local matcher time, and explicit zero-sample results where repeat-use, browser fills, API latency or human timing evidence is unavailable. It does not claim synthetic families are real independent websites. See [evaluation/REPORT.md](evaluation/REPORT.md) for denominators, limitations and the F1–F6 evidence checklist, and [evaluation/MANUAL_PROTOCOL.md](evaluation/MANUAL_PROTOCOL.md) for the counterbalanced completion-time protocol.
+Labels in `evaluation/corpus.mjs` and explicit expected values in `evaluation/expected-values.mjs` are separate from matcher code. The audited corpus has **100 cases in 10 authored descriptor groups, with 63 distinct field descriptors**. These are not rendered browser forms; no independent-family or untouched held-out evidence is established. The old second revision duplicated descriptors and has been removed. The runner checks exact profile keys and final values, and reports matcher timing separately from missing browser/API/human measurements.
 
-The current report is not a release sign-off: Chrome/Edge browser verification, live POD-16 behavior, real saved-correction outcomes, observed fill reliability and human completion-time results still require evidence.
+See [evaluation/AUDIT.md](evaluation/AUDIT.md) for F1?F7 evidence and blockers, [evaluation/REPORT.md](evaluation/REPORT.md) for denominators and limitations, and [evaluation/MANUAL_PROTOCOL.md](evaluation/MANUAL_PROTOCOL.md) for the counterbalanced human comparison.
+
+F7's native PLUMA bridge is missing. Chrome/Edge verification, live POD-16 behavior, the required independent corpus and fresh held-out families, real saved-correction outcomes, observed fill reliability and human completion-time results remain incomplete. This is not a release sign-off.
+
+After updating, reload the unpacked extension. The `alarms` permission supports pending-preview cleanup; expiry is also checked before use. Version-one correction rules remain inspectable but are retired from reuse: review a new correction and explicitly remember it again. Version-two rules show control/key/site/profile identifiers and fingerprints rather than retaining raw page labels.

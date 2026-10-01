@@ -25,7 +25,7 @@
         sendResponse({ type: "pluma/fill-result", outcomes: [], error: "The approved fill request was invalid." });
         return false;
       }
-      fillApproved(message.items).then((outcomes) => sendResponse({ type: "pluma/fill-result", outcomes }))
+      fillApproved(message.items, message.expectedFields, message.targetUrl).then((outcomes) => sendResponse({ type: "pluma/fill-result", outcomes }))
         .catch(() => sendResponse({ type: "pluma/fill-result", outcomes: [], error: "The page could not complete the approved fill." }));
       return true;
     }
@@ -45,16 +45,11 @@
     const controls = [...document.querySelectorAll("input, textarea, select")].filter(isVisible);
     const fields = controls.map(describeField);
     const eligible = fields.filter((field) => field.eligible).length;
-    return { type: "pluma/scan-result", fields, summary: { total: fields.length, eligible, blocked: fields.length - eligible, notices: ["Embedded frames, custom dropdowns and shadow DOM are not scanned."] } };
+    return { type: "pluma/scan-result", documentUrl: location.href, fields, summary: { total: fields.length, eligible, blocked: fields.length - eligible, notices: ["Embedded frames, custom dropdowns and shadow DOM are not scanned."] } };
   }
 
   function describeField(element) {
     const id = getFieldId(element);
-    const currentValue = String(element.value || "");
-    if (state.valueSnapshots.has(element) && state.valueSnapshots.get(element) !== currentValue) {
-      state.revisions.set(element, (state.revisions.get(element) || 0) + 1);
-    }
-    state.valueSnapshots.set(element, currentValue);
     const ariaLabels = getAriaLabels(element);
     const instructions = getAriaDescriptions(element);
     const label = clean(element.labels ? [...element.labels].map(labelText).join(" ") : "") ||
@@ -65,6 +60,13 @@
     const visible = isVisible(element);
     const unsupportedReason = exclusionReason(element, inputType, autocomplete, [label, ...ariaLabels, ...instructions, context].join(" ")) || (!visible ? "This field is no longer visible." : "");
     const eligible = visible && !unsupportedReason && !isDisabled(element) && !element.readOnly && ["text", "email", "tel", "url", "textarea", "date", "select-one"].includes(inputType);
+    let hasValue = false;
+    if (eligible) {
+      const currentValue = String(element.value || "");
+      if (state.valueSnapshots.has(element) && state.valueSnapshots.get(element) !== currentValue) state.revisions.set(element, (state.revisions.get(element) || 0) + 1);
+      state.valueSnapshots.set(element, currentValue);
+      hasValue = Boolean(currentValue);
+    } else state.valueSnapshots.delete(element);
     return {
       id,
       kind: element.tagName.toLowerCase(),
@@ -77,11 +79,12 @@
       placeholder: clean(element.getAttribute("placeholder")),
       context,
       inputType,
-      options: isNativeSelect(element) ? [...element.options].slice(0, 100).map((option) => ({ value: cleanOption(option.value), label: cleanOption(option.label || option.textContent), disabled: Boolean(option.disabled || option.parentElement?.disabled) })) : [],
+      formIdentity: element.form ? { id: element.form.id || "", name: element.form.getAttribute("name") || "", action: element.form.getAttribute("action") || "", method: element.form.getAttribute("method") || "" } : null,
+      options: isNativeSelect(element) ? [...element.options].slice(0, 100).map((option) => ({ value: String(option.value), label: cleanOption(option.label || option.textContent), disabled: Boolean(option.disabled || option.parentElement?.disabled) })) : [],
       multiple: isNativeSelect(element) ? Boolean(element.multiple) : false,
       maxLength: Number.isInteger(element.maxLength) ? element.maxLength : -1,
       visible,
-      hasValue: Boolean(element.value),
+      hasValue,
       eligible,
       unsupportedReason: unsupportedReason || (!eligible ? (element.disabled || element.readOnly ? "Disabled or read-only control." : "Unsupported control type.") : ""),
       revision: state.revisions.get(element) || 0
@@ -107,7 +110,7 @@
     for (const id of labelledBy) {
       const referenced = document.getElementById(id);
       if (referenced?.matches?.("input, textarea, select, button")) continue;
-      const text = clean(referenced?.innerText || referenced?.textContent);
+      const text = clean(labelText(referenced));
       if (text) values.push(text);
     }
     return [...new Set(values)].slice(0, 4);
@@ -121,7 +124,7 @@
     for (const id of describedBy) {
       const referenced = document.getElementById(id);
       if (referenced?.matches?.("input, textarea, select, button")) continue;
-      const text = clean(referenced?.innerText || referenced?.textContent);
+      const text = clean(labelText(referenced));
       if (text) values.push(text);
     }
     return [...new Set(values)].slice(0, 4);
@@ -133,16 +136,17 @@
     const formLabel = clean(form?.getAttribute("aria-label") || form?.getAttribute("name"));
     if (formLabel) labels.push(formLabel);
     const formHeading = [...(form?.children || [])].find((child) => child.matches?.("legend, h1, h2, h3, h4"));
-    const directFormHeading = clean(formHeading?.innerText || formHeading?.textContent);
+    const directFormHeading = clean(labelText(formHeading));
     if (directFormHeading) labels.push(directFormHeading);
 
     const ancestors = [];
     let ancestor = element.parentElement;
     for (let depth = 0; ancestor && depth < 12 && ancestors.length < 5; depth += 1, ancestor = ancestor.parentElement) {
+      if (ancestor === form) break;
       if (!ancestor.matches?.("fieldset, [role='group'], [role='region'], section")) continue;
       const aria = clean(ancestor.getAttribute("aria-label") || readReferencedText(ancestor, "aria-labelledby"));
       const directHeading = [...(ancestor.children || [])].find((child) => child.matches?.("legend, h1, h2, h3, h4"));
-      const heading = clean(directHeading?.innerText || directHeading?.textContent);
+      const heading = clean(labelText(directHeading));
       const value = aria || heading;
       if (value && !ancestors.includes(value)) ancestors.push(value);
     }
@@ -153,21 +157,25 @@
   function readReferencedText(element, attribute) {
     return clean((element?.getAttribute(attribute) || "").split(/\s+/).filter(Boolean).map((id) => {
       const referenced = document.getElementById(id);
-      return referenced?.matches?.("input, textarea, select, button") ? "" : (referenced?.innerText || referenced?.textContent || "");
+      return referenced?.matches?.("input, textarea, select, button") ? "" : labelText(referenced);
     }).join(" "));
   }
 
   function labelText(label) {
+    if (!label) return "";
+    if (typeof label.cloneNode !== "function") return label.innerText || label.textContent || "";
     const clone = label.cloneNode(true);
-    clone.querySelectorAll("input, textarea, select, button").forEach((control) => control.remove());
+    clone.querySelectorAll("input, textarea, select, button, script, style").forEach((control) => control.remove());
     return clone.innerText || clone.textContent || "";
   }
 
   function exclusionReason(element, type, autocomplete, semanticText) {
+    if (semanticText.length > 4000 || [autocomplete, element.getAttribute("name"), element.id, element.getAttribute("placeholder")].some((value) => String(value || "").length > 4000)) return "Field metadata exceeds the supported limit; review this field manually.";
     const tokens = autocomplete.toLowerCase().split(/\s+/);
     const role = String(element.getAttribute("role") || "").toLowerCase();
+    if (isNativeSelect(element) && element.options.length > 100) return "Select controls with more than 100 options require manual entry.";
     if (role === "combobox" || element.getAttribute("aria-haspopup") === "listbox" || element.hasAttribute?.("list")) return "Custom dropdown controls are unsupported.";
-    const name = `${element.getAttribute("name") || ""} ${element.id || ""}`.toLowerCase();
+    const name = `${element.getAttribute("name") || ""} ${element.id || ""}`;
     const riskText = `${name} ${semanticText}`.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9]+/g, " ");
     if (type === "hidden") return "Hidden fields are never filled.";
     if (type === "password") return "Password fields are never filled.";
@@ -183,8 +191,13 @@
   }
 
   function isVisible(element) {
-    const style = getComputedStyle(element);
-    return Boolean(element.getClientRects().length) && style.visibility !== "hidden" && style.display !== "none";
+    if (![...element.getClientRects()].some((rect) => rect.width !== 0 && rect.height !== 0)) return false;
+    for (let node = element; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (node.hidden || node.inert || node.getAttribute?.("aria-hidden") === "true" || style.visibility === "hidden" ||
+          style.visibility === "collapse" || style.display === "none" || style.opacity === "0" || style.contentVisibility === "hidden") return false;
+    }
+    return true;
   }
 
   function isDisabled(element) {
@@ -193,18 +206,31 @@
 
   function isNativeSelect(element) { return typeof HTMLSelectElement !== "undefined" && element instanceof HTMLSelectElement; }
 
-  function clean(value) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 160); }
-  function cleanOption(value) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 160); }
+  function clean(value) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 4001); }
+  function cleanOption(value) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 4001); }
 
   function isValidFillRequest(message) {
-    return Array.isArray(message.items) && message.items.length > 0 && message.items.length <= 100 && message.items.every((item) =>
+    return typeof message.targetUrl === "string" && Array.isArray(message.expectedFields) && Array.isArray(message.items) && message.items.length > 0 && message.items.length <= 100 && message.items.every((item) =>
       item && typeof item.fieldId === "string" && typeof item.value === "string" && item.value.length <= 4000 &&
       typeof item.overwrite === "boolean" && item.expected && typeof item.expected === "object");
   }
 
-  async function fillApproved(items) {
+  async function fillApproved(items, expectedFields, targetUrl) {
     const outcomes = [];
+    const currentFields = scanDocument().fields;
+    if (location.href !== targetUrl || currentFields.length !== expectedFields.length || currentFields.some((field, index) => !sameSemantics(expectedFields[index], field))) {
+      return items.map((item) => outcome(item.fieldId, "skipped", "The form or page changed after preview. Scan and review again."));
+    }
     for (const item of items) {
+      if (location.href !== targetUrl) {
+        outcomes.push(outcome(item.fieldId, "skipped", "The page navigated during filling. Review remaining fields."));
+        continue;
+      }
+      const structure = scanDocument().fields;
+      if (structure.length !== expectedFields.length || structure.some((field, index) => !sameStructure(expectedFields[index], field))) {
+        outcomes.push(outcome(item.fieldId, "skipped", "The form structure changed during filling. Review a fresh preview."));
+        continue;
+      }
       const element = state.elements.get(item.fieldId);
       if (!element?.isConnected) {
         outcomes.push(outcome(item.fieldId, "skipped", "The field was removed after preview."));
@@ -238,17 +264,30 @@
         element.focus({ preventScroll: true });
         element.blur();
         await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-        if (element.isConnected && element.value === item.value) { state.valueSnapshots.set(element, String(element.value)); outcomes.push(outcome(item.fieldId, "filled", "Value was accepted and retained after blur.")); }
+        if (element.isConnected && element.value === item.value && element.validity?.valid !== false) { state.valueSnapshots.set(element, String(element.value)); outcomes.push(outcome(item.fieldId, "filled", "Value retained after blur and passed native validation at verification time.")); }
         else outcomes.push(outcome(item.fieldId, "failed", "The page did not retain this value after input events."));
       } catch (_error) {
         outcomes.push(outcome(item.fieldId, "failed", "The page rejected this field update."));
       }
     }
-    return outcomes;
+    // Recheck earlier writes after later field handlers have run.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    return outcomes.map((result) => {
+      if (result.status !== "filled") return result;
+      const item = items.find((candidate) => candidate.fieldId === result.fieldId);
+      const element = state.elements.get(result.fieldId);
+      if (!element?.isConnected || element.value !== item.value || element.validity?.valid === false || !describeField(element).eligible || !sameStructure(item.expected, describeField(element))) {
+        return outcome(result.fieldId, "failed", "The value was changed, invalidated or removed before final verification. Review this field.");
+      }
+      return result;
+    });
   }
 
+  function sameStructure(expected, current) {
+    return sameSemantics({ ...expected, hasValue: current.hasValue, revision: current.revision }, current);
+  }
   function sameSemantics(expected, current) {
-    const keys = ["id", "kind", "label", "ariaLabels", "instructions", "autocomplete", "name", "domId", "placeholder", "context", "inputType", "options", "multiple", "maxLength", "visible", "hasValue", "eligible", "revision"];
+    const keys = ["id", "kind", "label", "ariaLabels", "instructions", "autocomplete", "name", "domId", "placeholder", "context", "inputType", "formIdentity", "options", "multiple", "maxLength", "visible", "hasValue", "eligible", "revision"];
     return keys.every((key) => JSON.stringify(expected[key]) === JSON.stringify(current[key]));
   }
 

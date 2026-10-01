@@ -10,6 +10,10 @@ export function normalizeAlias(value) {
 
 /** Deterministic matcher: only explicit semantic categories, exact aliases and exact option matches are used. */
 export function matchField(field, facts) {
+  const result = matchFieldInternal(field, facts);
+  return validateFormattedProposal(field, (facts || []).find((fact) => fact.key === result.profileKey), result);
+}
+function matchFieldInternal(field, facts) {
   facts = Array.isArray(facts) ? facts : [];
   if (!field?.eligible) return proposal(null, MATCH_STATUS.UNSUPPORTED, field?.unsupportedReason || "This control is not supported for safe filling.");
   if (!isSupportedKind(field)) return proposal(null, MATCH_STATUS.UNSUPPORTED, "This native control type is unsupported.");
@@ -75,9 +79,15 @@ export function formatDateForField(fact, inputType) {
   return { status: MATCH_STATUS.MATCHED, value: fact.value, reason: full ? "Uses the complete stored date." : "Uses the stored year only." };
 }
 export function formatSelectedFact(field, fact) {
+  return validateFormattedProposal(field, fact, formatSelectedFactInternal(field, fact));
+}
+function formatSelectedFactInternal(field, fact) {
   if (!field?.eligible) return proposal(null, MATCH_STATUS.UNSUPPORTED, field?.unsupportedReason || "This control is not supported.");
   if (!fact?.value) return proposal(fact?.key || null, MATCH_STATUS.MISSING_VALUE, "The selected approved fact has no value.");
   if (!factFitsInputType(field, fact)) return proposal(fact.key, MATCH_STATUS.NEEDS_CHOICE, "This approved fact type is incompatible with the control type.");
+  const expectedName = String(field.autocomplete || "").split(/\s+/).map((token) => AUTOCOMPLETE_KEYS[token]).find((key) => ["fullName", "firstName", "lastName", "username"].includes(key)) ||
+    ({ "first name": "firstName", "given name": "firstName", "last name": "lastName", "family name": "lastName", "surname": "lastName", "full name": "fullName", "username": "username" })[normalizeAlias(field.label)];
+  if (expectedName && ["fullName", "firstName", "lastName", "username"].includes(fact.key) && fact.key !== expectedName) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "The selected name fact conflicts with the explicit field meaning.");
   const text = fieldText(field);
   const category = classifyCategory(text);
   const scoped = classifyScope(text);
@@ -90,10 +100,8 @@ export function formatSelectedFact(field, fact) {
     const part = fieldAddressPart(field);
     if (part && addressPart(fact) !== part) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "Choose the matching address component for this field.");
   }
-  if (field.inputType === "date") return { ...formatDateForField(fact, "date"), profileKey: fact.key };
-  if (category.kind === "year" && /graduation/i.test(`${fact.key} ${fact.label}`)) {
-    return proposal(fact.key, MATCH_STATUS.MATCHED, "Uses the approved graduation year without adding date precision.", { formattedValue: /^\d{4}-\d{2}-\d{2}$/.test(fact.value) ? fact.value.slice(0, 4) : fact.value });
-  }
+  if (field.inputType === "date" || category.kind === "fullDate") return matchDate(field, [fact], true);
+  if (category.kind === "year") return matchYear(field, [fact]);
   if (field.kind === "select") return matchSelect(field, fact, []);
   if (field.maxLength >= 0 && fact.value.length > field.maxLength) return proposal(fact.key, MATCH_STATUS.NEEDS_CHOICE, `The selected value exceeds this field’s ${field.maxLength}-character limit. Nothing will be truncated.`);
   return proposal(fact.key, MATCH_STATUS.MATCHED, `You chose ${fact.label} for this field.`);
@@ -120,17 +128,22 @@ function matchDate(field, facts, dateRequired) {
   if (/\b(date of birth|birth date|dob|start date|availability date|application date)\b/i.test(text)) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "This date has a different meaning from graduation; choose a fact or enter the date directly.");
   if (!/\b(graduation|expected completion|completion date)\b/i.test(text)) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "No exact approved date meaning matches this field.");
   const candidates = facts.filter((fact) => /graduation|expected.?completion/i.test(`${fact.key} ${fact.label}`));
-  const full = candidates.find((fact) => formatDateForField(fact, "date").status === MATCH_STATUS.MATCHED);
+  const complete = candidates.filter((fact) => fact.type === "date" && formatDateForField(fact, "date").status === MATCH_STATUS.MATCHED);
+  if (new Set(complete.map((fact) => fact.value)).size > 1) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "Approved graduation dates conflict; choose a source explicitly.");
+  const full = complete[0];
   if (full) return proposal(full.key, MATCH_STATUS.MATCHED, "Uses the complete approved graduation date.");
   if (candidates.length) return proposal(candidates[0].key, MATCH_STATUS.MISSING_VALUE, "Only a graduation year is approved. A month and day will not be invented.");
   return proposal(null, MATCH_STATUS.MISSING_VALUE, dateRequired ? "No complete approved date is available." : "No approved graduation date is available.");
 }
 function matchYear(field, facts) {
-  const fact = facts.find((item) => /graduation.?year|year.?of.?graduation/i.test(`${item.key} ${item.label}`) && item.value);
-  if (!fact) return proposal(null, MATCH_STATUS.MISSING_VALUE, "No approved graduation year is stored.");
-  const value = /^\d{4}-\d{2}-\d{2}$/.test(fact.value) ? fact.value.slice(0, 4) : fact.value;
-  return proposal(fact.key, MATCH_STATUS.MATCHED, "Uses the approved graduation year without adding date precision.", { formattedValue: value });
+  const candidates = facts.filter((fact) => /graduation|expected.?completion/i.test(`${fact.key} ${fact.label}`) && fact.value);
+  if (!candidates.length) return proposal(null, MATCH_STATUS.MISSING_VALUE, "No approved graduation year is stored.");
+  const valid = candidates.filter((fact) => (fact.type === "year" && /^\d{4}$/.test(fact.value)) ||
+    (fact.type === "date" && isValidCalendarDate(fact.value) && (fact.datePrecision || fact.date_precision) === "day"));
+  if (valid.length !== candidates.length || new Set(valid.map((fact) => fact.value.slice(0, 4))).size !== 1) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "Graduation year facts are invalid or conflicting; review the source.");
+  return proposal(valid[0].key, MATCH_STATUS.MATCHED, "Uses the approved graduation year without adding date precision.", { formattedValue: valid[0].value.slice(0, 4) });
 }
+
 function matchSelect(field, fact, evidence) {
   const options = Array.isArray(field.options) ? field.options.filter((option) => !option.disabled) : [];
   const target = normalizeAlias(fact.value);
@@ -205,6 +218,14 @@ function factFitsContext(fact, category, scope) {
   if (scope && category.kind === "address" && /address|postal|zip|city|region|country|locality/.test(text) && addressScope(fact) !== scope) return false;
   return true;
 }
+function validateFormattedProposal(field, fact, result) {
+  if (result.status !== MATCH_STATUS.MATCHED) return result;
+  if (!fact || !factFitsInputType(field, fact)) return proposal(result.profileKey, MATCH_STATUS.NEEDS_CHOICE, "Fact type conflicts with the control type.");
+  const value = result.composedValue ?? result.formattedValue ?? fact.value;
+  if (typeof value !== "string" || value.length > 4000 || (Number.isInteger(field.maxLength) && field.maxLength >= 0 && value.length > field.maxLength)) return proposal(result.profileKey, MATCH_STATUS.NEEDS_CHOICE, "The formatted value exceeds this control's limit; nothing will be truncated.");
+  if (field.kind === "select" && !Object.hasOwn(result, "optionLabel")) return matchSelect(field, { ...fact, value }, []);
+  return result;
+}
 function isAnswerPrompt(text) { return /\b(motivation|eligibility|opinion|why (?:do you|are you|would you)|tell us why|why should)\b/i.test(text); }
 function factFitsInputType(field, fact) {
   if (field.inputType === "email") return fact.type === "email";
@@ -215,6 +236,6 @@ function factFitsInputType(field, fact) {
 }
 function isSupportedKind(field) { return ["text", "email", "tel", "url", "textarea", "date", "select-one"].includes(field.inputType) || (field.kind === "select" && !field.multiple); }
 function addressScope(fact) { const text = `${fact.key} ${fact.label} ${(fact.aliases || []).join(" ")}`; return classifyScope(text).scope; }
-function addressPart(fact) { const text = `${fact.key} ${fact.label}`.toLowerCase(); if (/line.?1|street|address line/.test(text)) return "line1"; if (/line.?2|apt|suite/.test(text)) return "line2"; if (/locality|district|suburb/.test(text)) return "locality"; if (/postal|zip/.test(text)) return "postal"; if (/city|town/.test(text)) return "city"; if (/state|region|province/.test(text)) return "region"; if (/country/.test(text)) return "country"; return ""; }
+function addressPart(fact) { const text = `${fact.key} ${fact.label}`.toLowerCase(); if (/line.?2|apt|suite/.test(text)) return "line2"; if (/line.?1|street|address line/.test(text)) return "line1"; if (/locality|district|suburb/.test(text)) return "locality"; if (/postal|zip/.test(text)) return "postal"; if (/city|town/.test(text)) return "city"; if (/state|region|province/.test(text)) return "region"; if (/country/.test(text)) return "country"; return ""; }
 function addEvidence(evidence, key, reason) { if (!evidence.has(key)) evidence.set(key, []); evidence.get(key).push(reason); }
 function describeCandidates(keys, facts) { return keys.map((key) => facts.find((fact) => fact.key === key)?.label || key).join(" and "); }
