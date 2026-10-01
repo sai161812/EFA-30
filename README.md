@@ -1,12 +1,14 @@
-# PLUMA Autofill — Phase 5
+# EFA-30
 
-This repository contains a Chrome/Edge Manifest V3 extension and local synthetic form fixtures. It scans an authorized top-level HTTP/HTTPS page, uses deterministic field and group context, and fills only rows the user selects and approves. Current/permanent address, personal/college email, institution/company and applicant/team-leader fields keep distinct meanings. Approved project snapshots require an explicit choice; application questions require a direct per-fill answer. Native single-select and full-date controls are supported when their values are unambiguous. It never submits forms or clicks Next. Offline setup uses a fictional profile only after you explicitly enable it in Settings. It is never selected automatically or used after an API error.
+A standalone browser autofill extension. Save your own details locally, review suggestions, and approve the fields to fill. PLUMA and POD-16 are not required for normal use.
 
-## Quick start with your real data
+## Start here
 
-See [START_HERE.md](START_HERE.md) for installation and the fact-key guide. Version 0.3.0 supports real local profiles: Settings ? **Use local profiles** ? Create ? Add facts ? Save. No source-file edits, server or API key are needed. Local facts are stored in this browser's extension storage, not encrypted or synced. The optional POD-16 and fictional demo modes remain separate, explicitly selected sources.
+Follow the [simple usage guide](usage_guide.md): **Open settings > Use local profiles > Create > Add facts > Save**. Then open a website form and click **Scan this page**.
 
-The distribution is `dist/PLUMA-Autofill-0.3.0.zip`; extract it and load its manifest folder. 72 automated checks pass. Browser end-to-end verification remains incomplete.
+Load this project folder directly; no ZIP or build step is required. If already installed, click **Reload** on the browser extensions page to show the updated name. Your stored profiles stay in place when reloading the same extension.
+
+Optional field details: [PROFILE_REFERENCE.md](PROFILE_REFERENCE.md). The sections below are technical reference; you can skip POD-16 setup for local use.
 
 ## Load the extension in Chrome or Edge
 
@@ -14,7 +16,7 @@ The distribution is `dist/PLUMA-Autofill-0.3.0.zip`; extract it and load its man
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked**.
 4. Select the repository root folder containing `manifest.json` (`D:\Workspace\DEVEL\EFA-30`).
-5. Confirm **PLUMA Autofill** appears and select its toolbar icon to open the popup.
+5. Confirm **EFA-30** appears and select its toolbar icon to open the popup.
 
 ## Start POD-16 locally
 

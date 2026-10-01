@@ -1,6 +1,6 @@
 # Skeptical implementation audit
 
-> Subsequent standalone update (0.3.0): real local profiles now support create/edit/select/delete without POD-16, using the same approval boundaries. The suite now has 72 passing checks. The audit below records the earlier baseline; browser/live API and benchmark evidence gaps remain. See ../START_HERE.md.
+> Subsequent standalone update (0.3.0): real local profiles now support create/edit/select/delete without POD-16, using the same approval boundaries. The suite now has 72 passing checks. The audit below records the earlier baseline; browser/live API and benchmark evidence gaps remain. See ../usage_guide.md.
 
 
 Date: 2026-10-01. Evidence comes from implementation inspection and executed checks, not README claims. No publication was performed.
