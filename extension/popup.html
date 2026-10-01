@@ -15,18 +15,20 @@
     <p id="status" role="status" aria-live="polite">Ready to scan the active page.</p>
     <button id="scan" type="button">Scan this page</button>
     <section id="preview" aria-labelledby="preview-heading" hidden>
-      <h2 id="preview-heading">Review before filling</h2>
+      <h2 id="preview-heading">Review your details</h2>
       <dl class="target-meta">
-        <dt>Website origin</dt><dd id="origin"></dd>
+        <dt>Website</dt><dd id="origin"></dd>
         <dt>Profile</dt><dd id="profile"></dd>
       </dl>
-      <p id="expiry" class="muted"></p>
       <p id="summary"></p>
+      <details class="scan-details"><summary>Scan details</summary><p id="expiry" class="muted"></p><p id="scan-details-text" class="muted"></p></details>
+      <button id="select-suggested" class="secondary" type="button">Select suggested fields</button>
+      <p class="muted selection-help">Selects suggestions for empty fields only. Review them before filling.</p>
       <p id="empty-fields" class="muted" hidden>No supported form controls were found on this page.</p>
       <div id="rows" class="rows"></div>
       <div class="actions">
-        <button id="approve" type="button">Approve and fill selected</button>
-        <button id="cancel" class="secondary" type="button">Cancel and clear preview</button>
+        <button id="approve" type="button">Fill selected fields</button>
+        <button id="cancel" class="secondary" type="button">Cancel</button>
       </div>
     </section>
     <section id="outcomes" aria-labelledby="outcomes-heading" hidden>

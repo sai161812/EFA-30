@@ -13,6 +13,7 @@ document.querySelector("#scan").addEventListener("click", scan);
 document.querySelector("#approve").addEventListener("click", approve);
 document.querySelector("#cancel").addEventListener("click", cancelPreview);
 document.querySelector("#settings").addEventListener("click", () => chrome.runtime.openOptionsPage());
+document.querySelector("#select-suggested").addEventListener("click", selectSuggested);
 void loadPendingPreview();
 
 async function loadPendingPreview() {
@@ -40,6 +41,21 @@ async function scan() {
     renderPreview(response);
     setStatus(`Scanned ${response.target.origin}. Review each row and select values before filling.`);
   } catch (error) { setStatus(error?.message || "The page could not be scanned."); } finally { scanButton.textContent = "Scan this page"; setBusy(false); }
+}
+
+async function selectSuggested() {
+  if (isBusy || !currentPreview) return;
+  setBusy(true);
+  try {
+    await flushValueUpdates();
+    for (const row of currentPreview.rows.filter((row) => row.field.eligible && row.status === "matched" && row.value && !row.field.hasValue && !row.include)) {
+      await enqueueUpdate(row.fieldId, { include: true });
+      if (updateError) throw updateError;
+    }
+    renderPreview(currentPreview);
+    setStatus("Review the selected values, then click Fill selected fields.");
+  } catch (error) { setStatus(error.message || "Could not select suggestions. Scan again."); }
+  finally { setBusy(false); }
 }
 
 async function approve() {
@@ -80,15 +96,16 @@ function renderPreview(data) {
   updateError = null;
   document.querySelector("#origin").textContent = data.target.origin;
   const source = data.profile.source === "local" ? "Your local approved facts" : data.profile.source === "pod16" ? "POD-16 approved facts" : "fictional development data";
-  document.querySelector("#profile").textContent = `${data.profile.name} (version ${data.profile.version}; ${source})`;
+  document.querySelector("#profile").textContent = `${data.profile.name}${data.profile.source === "development" ? " (fictional demo)" : ""}`;
   document.querySelector("#expiry").textContent = `This preview expires ${new Date(data.expiresAt).toLocaleTimeString()}.`;
   const timings = data.timings || {};
   const timingText = [
     Number.isFinite(timings.pageScanAndMatchMs) ? `Page scan + local matching: ${timings.pageScanAndMatchMs} ms.` : "",
     Number.isFinite(timings.profileApiMs) ? `POD-16 profile request: ${timings.profileApiMs} ms.` : ""
   ].filter(Boolean).join(" ");
-  document.querySelector("#summary").textContent = `${data.counts.eligible} eligible of ${data.counts.total} visible controls. Nothing is written until you approve. ${timingText} ${data.notices.join(" ")}`;
-  document.querySelector("#empty-fields").hidden = data.rows.length > 0;
+  document.querySelector("#scan-details-text").textContent = `${source}. ${data.counts.eligible} eligible of ${data.counts.total} visible controls. Nothing is written until you approve. ${timingText} ${data.notices.join(" ")}`;
+  updateSelectionSummary();
+  document.querySelector("#empty-fields").hidden = data.counts.eligible > 0;
   rows.replaceChildren(...data.rows.map((row) => createRow(row, data.profile)));
   preview.hidden = false;
   document.querySelector("#approve").disabled = Boolean(data.filling);
@@ -103,14 +120,19 @@ function createRow(row, profile) {
 
   const title = document.createElement("h3");
   title.textContent = row.field.label || row.field.kind;
-  card.append(title);
+  const advanced = document.createElement("details");
+  advanced.className = "field-details";
+  const advancedTitle = document.createElement("summary");
+  advancedTitle.textContent = row.status === "matched" ? "Edit or view details" : "Choose a value / details";
+  advanced.append(advancedTitle);
   const context = document.createElement("p");
   context.className = "context";
   context.textContent = [row.field.context, row.field.placeholder ? `Placeholder: ${row.field.placeholder}` : "", ...(row.field.instructions || []).map((value) => `Instruction: ${value}`)].filter(Boolean).join(" · ");
-  card.append(context);
+  advanced.append(context);
   const state = document.createElement("p");
   state.className = "match-state";
-  state.textContent = `${row.status}: ${row.reason}`;
+  state.textContent = row.field.eligible ? (row.status === "matched" ? "" : "Needs your input") : "Not supported";
+  state.hidden = row.status === "matched";
   card.append(state);
 
   const includeLabel = document.createElement("label");
@@ -119,8 +141,12 @@ function createRow(row, profile) {
   include.checked = row.include;
   include.disabled = !row.field.eligible || currentPreview.filling || isBusy;
   include.addEventListener("change", () => sendChange(row.fieldId, { include: include.checked }));
-  includeLabel.append(include, document.createTextNode(" Include this field"));
+  includeLabel.append(include, document.createTextNode(` ${title.textContent}`));
   card.append(includeLabel);
+  const suggestedValue = document.createElement("p");
+  suggestedValue.className = "suggested-value";
+  suggestedValue.textContent = row.value || "No suggestion";
+  card.append(suggestedValue);
 
   const mappingLabel = document.createElement("label");
   mappingLabel.append(document.createTextNode("Profile fact"));
@@ -148,7 +174,7 @@ function createRow(row, profile) {
     sendChange(row.fieldId, { profileKey: mapping.value || null }, true);
   });
   mappingLabel.append(mapping);
-  card.append(mappingLabel);
+  advanced.append(mappingLabel);
 
   if (row.canRemember) {
     const rememberLabel = document.createElement("label");
@@ -156,13 +182,13 @@ function createRow(row, profile) {
     remember.type = "checkbox";
     remember.checked = row.rememberMapping;
     remember.disabled = currentPreview.filling || isBusy;
-    remember.addEventListener("change", () => sendChange(row.fieldId, { rememberMapping: remember.checked }, true));
+    remember.addEventListener("change", () => sendChange(row.fieldId, { rememberMapping: remember.checked }));
     rememberLabel.append(remember, document.createTextNode(" Remember this mapping for this website and form"));
-    card.append(rememberLabel);
+    advanced.append(rememberLabel);
     const memoryHelp = document.createElement("p");
     memoryHelp.className = "muted";
     memoryHelp.textContent = "Stores the field meaning and selected profile fact key. It never stores the filled value, and still requires your approval each time.";
-    card.append(memoryHelp);
+    advanced.append(memoryHelp);
   }
 
   const valueLabel = document.createElement("label");
@@ -183,12 +209,12 @@ function createRow(row, profile) {
   value.disabled = !row.field.eligible || currentPreview.filling || isBusy;
   value.setAttribute("aria-label", row.directAnswer ? `Direct answer for ${row.field.label}` : `Value for ${row.field.label}`);
   valueLabel.append(value);
-  card.append(valueLabel);
+  advanced.append(valueLabel);
 
   const detail = document.createElement("p");
   detail.className = "source";
   detail.textContent = `Source: ${row.source} · Match: ${row.reason}`;
-  card.append(detail);
+  advanced.append(detail);
 
   if (row.field.hasValue) {
     const overwriteLabel = document.createElement("label");
@@ -203,14 +229,15 @@ function createRow(row, profile) {
     const existing = document.createElement("p");
     existing.className = "muted";
     existing.textContent = "Field is currently empty.";
-    card.append(existing);
+    advanced.append(existing);
   }
   if (!row.field.eligible) {
     const excluded = document.createElement("p");
     excluded.className = "excluded";
     excluded.textContent = `Excluded: ${row.field.unsupportedReason}`;
-    card.append(excluded);
+    advanced.append(excluded);
   }
+  card.append(advanced);
   return card;
 }
 
@@ -258,6 +285,9 @@ function enqueueUpdate(fieldId, changes, redraw = false) {
     if (response.previewToken !== token || !Number.isInteger(response.previewRevision)) throw new Error("The preview update was not acknowledged. Scan again.");
     currentPreview.previewRevision = response.previewRevision;
     currentPreview.rows = currentPreview.rows.map((row) => row.fieldId === fieldId ? response.row : row);
+    updateSelectionSummary();
+    const valueText = rows.querySelector(`[data-field-id="${CSS.escape(fieldId)}"] .suggested-value`);
+    if (valueText) valueText.textContent = response.row.value || "No suggestion";
     if (redraw && response.row) renderRow(response.row);
   }).catch((error) => {
     updateError = error;
@@ -271,6 +301,7 @@ function renderRow(row) {
   if (!oldCard) return;
   const restoreMappingFocus = document.activeElement === oldCard.querySelector("select");
   const replacement = createRow(row, currentPreview.profile);
+  replacement.querySelector("details").open = oldCard.querySelector("details")?.open || false;
   oldCard.replaceWith(replacement);
   if (restoreMappingFocus) replacement.querySelector("select")?.focus();
 }
@@ -301,9 +332,17 @@ function handleError(response) {
   return false;
 }
 
+function updateSelectionSummary() {
+  const selected = currentPreview?.rows.filter((row) => row.include).length || 0;
+  const available = currentPreview?.rows.filter((row) => row.field.eligible && row.status === "matched" && row.value).length || 0;
+  document.querySelector("#summary").textContent = `${available} suggestions. ${selected} selected.`;
+  document.querySelector("#approve").textContent = selected ? `Fill ${selected} selected field${selected === 1 ? "" : "s"}` : "Fill selected fields";
+}
+
 function setBusy(value) {
   isBusy = value;
   document.querySelector("#scan").disabled = value;
+  document.querySelector("#select-suggested").disabled = value || Boolean(currentPreview?.filling);
   document.querySelector("#approve").disabled = value || Boolean(currentPreview?.filling);
   document.querySelector("#cancel").disabled = value;
   rows.querySelectorAll("input, select, textarea").forEach((control) => {

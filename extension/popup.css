@@ -29,3 +29,19 @@ textarea { resize: vertical; }
 .actions { display: grid; gap: 8px; margin-top: 10px; }
 ul { max-height: 180px; overflow: auto; padding-left: 20px; }
 li { margin: 6px 0; overflow-wrap: anywhere; }
+
+/* Keep the daily workflow compact; advanced controls remain available on demand. */
+body { width: 420px; }
+#status { min-height: 0; margin: 10px 0; }
+.target-meta { grid-template-columns: 65px 1fr; font-size: 12px; }
+#summary { margin: 10px 0 6px; }
+.selection-help { margin: 5px 0 12px; }
+.field-card { gap: 5px; }
+.field-card > label:first-of-type { font-weight: 600; }
+.suggested-value { margin: 0 0 2px 25px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 100px; overflow: auto; }
+summary { cursor: pointer; color: #194e80; padding: 5px 0; font-size: 12px; }
+summary:focus-visible { outline: 3px solid #f1a900; outline-offset: 2px; }
+.field-details[open] { display: grid; gap: 7px; }
+.scan-details { margin-bottom: 4px; }
+.actions { position: sticky; bottom: -16px; background: #fff; padding: 10px 0 16px; border-top: 1px solid #d4dce3; }
+.actions .secondary { margin-top: 0; min-height: 30px; padding: 4px 10px; }

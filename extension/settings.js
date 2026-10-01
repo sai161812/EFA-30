@@ -9,6 +9,17 @@ let currentProfile = null;
 let apiConfigured = false;
 let localMode = false;
 let editorRequest = 0;
+let editRevision = 0;
+let savingProfile = false;
+document.querySelector("#profile-editor").addEventListener("input", () => { editRevision += 1; });
+document.querySelector("#profile-editor").addEventListener("change", () => { editRevision += 1; });
+
+function clearEditor() {
+  editorRequest += 1;
+  currentProfile = null;
+  document.querySelector("#profile-editor").hidden = true;
+  profileSelect.replaceChildren(new Option("Choose a profile", ""));
+}
 
 document.querySelector("#connect").addEventListener("click", connect);
 document.querySelector("#logout").addEventListener("click", logout);
@@ -19,7 +30,7 @@ document.querySelector("#save-profile").addEventListener("click", saveProfile);
 document.querySelector("#development-profile-enabled").addEventListener("change", setDevelopmentProfile);
 profileSelect.addEventListener("change", () => void loadEditor(profileSelect.value));
 document.querySelector("#enable-local").addEventListener("click", async () => {
-  try { await send(MESSAGE.LOCAL_PROFILE_ENABLE); await initialize(); }
+  try { await send(MESSAGE.LOCAL_PROFILE_ENABLE); clearEditor(); await initialize(); }
   catch (error) { showError(error); }
 });
 document.querySelector("#delete-local-profile").addEventListener("click", async () => {
@@ -78,6 +89,7 @@ async function connect() {
     const permission = await chrome.permissions.request({ origins: [`${origin}/*`] });
     if (!permission) throw new Error("Permission for the configured POD-16 origin was not granted.");
     await send(MESSAGE.API_CONFIGURE, { origin });
+    clearEditor();
     apiConfigured = true;
     localMode = false;
     document.querySelector("#delete-local-profile").hidden = true;
@@ -204,15 +216,19 @@ function createFactRow(fact = {}) {
   remove.type = "button";
   remove.className = "secondary remove-fact";
   remove.textContent = "Remove fact";
-  remove.addEventListener("click", () => row.remove());
+  remove.addEventListener("click", () => { editRevision += 1; row.remove(); });
   row.append(remove);
   return row;
 }
 
-function addFact() { factList.append(createFactRow({ source: "User approved" })); }
+function addFact() { editRevision += 1; factList.append(createFactRow({ source: "User approved" })); }
 
 async function saveProfile() {
-  if (!currentProfile) return;
+  if (!currentProfile || savingProfile) return;
+  savingProfile = true;
+  const saveButton = document.querySelector("#save-profile");
+  saveButton.disabled = true;
+  const revision = editRevision;
   const request = editorRequest;
   const savedId = currentProfile.id;
   try {
@@ -223,9 +239,16 @@ async function saveProfile() {
     const result = await send(MESSAGE.API_UPDATE_PROFILE, { profileId: currentProfile.id, profile: { expected_version: currentProfile.version, name: document.querySelector("#profile-name").value.trim(), facts } });
     if (request !== editorRequest || currentProfile?.id !== savedId) { status.textContent = "The previous profile was saved. Review your current selection."; return; }
     currentProfile = result.profile;
-    await refreshProfiles(currentProfile.id);
+    if (revision !== editRevision) {
+      status.textContent = "The earlier changes were saved. Your newer edits are still here; click Save profile changes again to save them.";
+      return;
+    }
+    document.querySelector("#editor-title").textContent = `${currentProfile.type} profile - version ${currentProfile.version}`;
+    const option = [...profileSelect.options].find((item) => item.value === currentProfile.id);
+    if (option) option.textContent = `${currentProfile.name} (${currentProfile.type}) - v${currentProfile.version}`;
     status.textContent = `Profile saved as version ${currentProfile.version}. Pending previews were cleared.`;
   } catch (error) { showError(error); }
+  finally { savingProfile = false; saveButton.disabled = false; }
 }
 
 async function send(type, fields = {}) {

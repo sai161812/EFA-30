@@ -31,8 +31,8 @@ Click **Save profile changes**, then **Use selected profile**. You do not need t
 
 1. Open a registration or application form.
 2. Click **EFA-30 > Scan this page**.
-3. Review the suggested values and tick the fields you want filled.
-4. Click **Approve and fill selected**.
+3. Click **Select suggested fields**, or tick individual fields. Review the displayed values. Use **Edit or view details** only if you need to change a suggestion.
+4. Click **Fill selected fields**.
 
 Check the filled form yourself, then submit it yourself. EFA-30 never submits for you.
 
