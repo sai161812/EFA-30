@@ -46,6 +46,13 @@
         <div class="actions"><button id="add-fact" class="secondary" type="button">Add fact</button><button id="save-profile" type="button">Save profile changes</button></div>
       </div>
     </section>
+    <section aria-labelledby="memory-heading">
+      <h2 id="memory-heading">Remembered mappings</h2>
+      <p class="muted">Rules are limited to one website origin, one form context, and one profile. They store field meaning and a profile fact key, never entered or filled values. Every suggestion still needs review and approval.</p>
+      <p id="memory-empty" class="muted" hidden>No remembered mappings yet.</p>
+      <div id="memory-rules" class="memory-rules"></div>
+      <button id="clear-memory" class="secondary" type="button" disabled>Clear all remembered mappings</button>
+    </section>
     <section aria-labelledby="offline-heading">
       <h2 id="offline-heading">Offline development data</h2>
       <p class="notice"><strong>Development data:</strong> when no API origin is configured, scans use the fictional Professional Demo profile. Configuring POD-16 disables this data completely, including when the API is unavailable.</p>

@@ -19,7 +19,8 @@ function makeRuntime() {
     runtime: { id: "extension-test", onMessage: { addListener(callback) { onMessage = callback; } } },
     storage: { local: {
       async get(key) { return { [key]: stored[`local:${key}`] }; },
-      async set(record) { for (const [key, value] of Object.entries(record)) stored[`local:${key}`] = value; }
+      async set(record) { for (const [key, value] of Object.entries(record)) stored[`local:${key}`] = value; },
+      async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete stored[`local:${key}`]; }
     }, session: {
       async setAccessLevel({ accessLevel }) { assert.equal(accessLevel, "TRUSTED_CONTEXTS"); },
       async get(key) { return { [key]: stored[key] }; },
@@ -268,4 +269,79 @@ test("application questions reject profile facts and accept only a direct per-fi
   assert.equal(ready.rows[0].value, "My direct answer for this application.");
   const result = await send(runtime, { type: "pluma/approve-and-fill" });
   assert.equal(result.outcomes[0].status, "filled");
+});
+
+test("remembered mappings are scoped suggestions, store no values, and reject stale or unavailable context", async () => {
+  const runtime = makeRuntime();
+  await loadWorker(runtime, "correction-memory");
+  const first = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(first.rows[0].profileKey, "email");
+      const corrected = await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { profileKey: "personalEmail" } });
+  assert.equal(corrected.row.canRemember, true);
+  assert.equal(corrected.row.rememberMapping, false);
+  const optedIn = await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { rememberMapping: true } });
+  assert.equal(optedIn.row.rememberMapping, true);
+  const rules = runtime.stored["local:correctionMemoryRules"];
+  assert.equal(rules.length, 1);
+  assert.equal(rules[0].origin, "http://localhost:8000");
+  assert.equal(rules[0].profileId, "professional-demo");
+  assert.equal(rules[0].profileKey, "personalEmail");
+  assert.equal(rules[0].ruleVersion, 1);
+  assert.equal(Object.hasOwn(rules[0], "value"), false);
+  const savedText = JSON.stringify(rules);
+  assert.equal(savedText.includes("avery.personal"), false);
+  assert.equal(savedText.includes("avery.example"), false);
+  assert.equal(savedText.includes("<input"), false);
+
+  const repeated = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(repeated.rows[0].profileKey, "personalEmail");
+  assert.equal(repeated.rows[0].remembered, true);
+  assert.match(repeated.rows[0].reason, /Remembered mapping suggestion/);
+  assert.equal(repeated.rows[0].include, false);
+  assert.equal((await send(runtime, { type: "pluma/approve-and-fill" })).type, "pluma/workflow-error");
+  assert.equal(runtime.calls.fills, 0);
+
+  const settings = settingsSender;
+  const listed = await send(runtime, { type: "pluma/memory-list" }, settings);
+  assert.equal(listed.rules.length, 1);
+  await send(runtime, { type: "pluma/memory-edit", ruleId: rules[0].id, profileKey: "removedFact" }, settings);
+  const absentFact = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(absentFact.rows[0].remembered, false);
+  assert.equal(absentFact.rows[0].memoryStatus, "rejected");
+  assert.notEqual(absentFact.rows[0].profileKey, "removedFact");
+
+  await send(runtime, { type: "pluma/memory-edit", ruleId: rules[0].id, profileKey: "personalEmail" }, settings);
+  const baseline = structuredClone(runtime.lastFields?.[0] || {
+    id: "field-1", kind: "input", label: "Email", ariaLabels: [], instructions: [], autocomplete: "email", name: "email",
+    domId: "", placeholder: "", context: "", inputType: "email", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0
+  });
+  for (const changed of [
+    { ...baseline, label: "Work email" },
+    { ...baseline, context: "Employment details" },
+    { ...baseline, inputType: "tel" }
+  ]) {
+    runtime.setFields([changed]);
+    const stale = await send(runtime, { type: "pluma/scan-active-tab" });
+    assert.equal(stale.rows[0].remembered, false);
+    assert.equal(stale.rows[0].memoryStatus, "rejected");
+    assert.notEqual(stale.rows[0].profileKey, "personalEmail");
+  }
+
+  runtime.setFields([baseline]);
+  runtime.stored["local:correctionMemoryRules"][0].profileId = "another-profile";
+  runtime.setActiveTab({ id: 7, url: "http://localhost:8000/" });
+  const otherProfile = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(otherProfile.rows[0].remembered, false);
+  assert.equal(otherProfile.rows[0].profileKey, "email");
+
+  runtime.stored["local:correctionMemoryRules"][0].profileId = "professional-demo";
+  runtime.setActiveTab({ id: 7, url: "https://other.example/" });
+  const otherOrigin = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(otherOrigin.rows[0].remembered, false);
+  assert.equal(otherOrigin.rows[0].profileKey, "email");
+
+  await send(runtime, { type: "pluma/memory-delete", ruleId: rules[0].id }, settings);
+  assert.equal((await send(runtime, { type: "pluma/memory-list" }, settings)).rules.length, 0);
+  await send(runtime, { type: "pluma/memory-clear" }, settings);
+  assert.equal((await send(runtime, { type: "pluma/memory-list" }, settings)).rules.length, 0);
 });

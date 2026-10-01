@@ -8,13 +8,15 @@ const SESSION_KEY = "pendingPreview";
 const PREVIEW_TTL_MS = 10 * 60 * 1000;
 const API_SETTINGS_KEY = "profileApiSettings";
 const API_TOKEN_KEY = "profileApiToken";
+const MEMORY_RULES_KEY = "correctionMemoryRules";
 const sessionReady = chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 let activeFillToken = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !Object.values(MESSAGE).includes(message.type) || message.type === MESSAGE.SCAN_PAGE || message.type === MESSAGE.FILL_APPROVED) return false;
   const apiMessage = [MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
-    MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE].includes(message.type);
+    MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE,
+    MESSAGE.MEMORY_LIST, MESSAGE.MEMORY_EDIT, MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_CLEAR].includes(message.type);
   if (apiMessage ? !isTrustedSettings(sender) : !isTrustedPopup(sender)) {
     sendResponse({ type: MESSAGE.WORKFLOW_ERROR, error: "This extension action came from an untrusted page." });
     return false;
@@ -167,10 +169,134 @@ async function fetchProfileApi(options) {
   }
 }
 
+
+async function dispatchMemory(message) {
+  validateMemoryMessage(message);
+  const rules = await getMemoryRules();
+  if (message.type === MESSAGE.MEMORY_LIST) return { type: MESSAGE.MEMORY_LIST, rules };
+  if (message.type === MESSAGE.MEMORY_CLEAR) {
+    await chrome.storage.local.remove(MEMORY_RULES_KEY);
+    return { type: MESSAGE.MEMORY_CLEAR, rules: [] };
+  }
+  const index = rules.findIndex((rule) => rule.id === message.ruleId);
+  if (index < 0) throw new Error("That remembered mapping no longer exists.");
+  if (message.type === MESSAGE.MEMORY_DELETE) {
+    rules.splice(index, 1);
+    await writeMemoryRules(rules);
+    return { type: MESSAGE.MEMORY_DELETE, rules };
+  }
+  if (typeof message.profileKey !== "string" || !/^[a-zA-Z0-9_.-]{1,80}$/.test(message.profileKey)) throw new Error("Enter a valid profile fact key.");
+  rules[index] = { ...rules[index], profileKey: message.profileKey, updatedAt: new Date().toISOString() };
+  await writeMemoryRules(rules);
+  return { type: MESSAGE.MEMORY_EDIT, rules };
+}
+
+function validateMemoryMessage(message) {
+  const allowed = {
+    [MESSAGE.MEMORY_LIST]: ["type"], [MESSAGE.MEMORY_CLEAR]: ["type"],
+    [MESSAGE.MEMORY_DELETE]: ["type", "ruleId"], [MESSAGE.MEMORY_EDIT]: ["type", "ruleId", "profileKey"]
+  }[message.type];
+  if (!allowed || Object.keys(message).some((key) => !allowed.includes(key)) ||
+      ([MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_EDIT].includes(message.type) && typeof message.ruleId !== "string")) {
+    throw new Error("The remembered mapping settings request was invalid.");
+  }
+}
+
+async function getMemoryRules() {
+  const saved = await chrome.storage.local.get(MEMORY_RULES_KEY);
+  return Array.isArray(saved[MEMORY_RULES_KEY]) ? saved[MEMORY_RULES_KEY].filter(isValidMemoryRule) : [];
+}
+async function writeMemoryRules(rules) { await chrome.storage.local.set({ [MEMORY_RULES_KEY]: rules }); }
+
+function fieldSemanticDescriptor(field) {
+  return {
+    label: field.label, ariaLabels: field.ariaLabels || [], instructions: field.instructions || [],
+    autocomplete: field.autocomplete || "", name: field.name || "", domId: field.domId || "",
+    placeholder: field.placeholder || "", context: field.context || "", kind: field.kind,
+    inputType: field.inputType || "", multiple: Boolean(field.multiple),
+    maxLength: Number.isInteger(field.maxLength) ? field.maxLength : -1,
+    eligible: Boolean(field.eligible), optionLabels: (field.options || []).map((option) => option.label)
+  };
+}
+function formFingerprintMaterial(fields) {
+  return fields.map((field) => ({ ...fieldSemanticDescriptor(field), optionValues: (field.options || []).map((option) => option.value) }));
+}
+async function fingerprintForm(fields) {
+  const bytes = new TextEncoder().encode(JSON.stringify(formFingerprintMaterial(fields)));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+async function fingerprintField(field) {
+  const bytes = new TextEncoder().encode(JSON.stringify(fieldSemanticDescriptor(field)));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+function isValidMemoryRule(rule) {
+  return isObject(rule) && typeof rule.id === "string" && typeof rule.origin === "string" &&
+    typeof rule.formFingerprint === "string" && typeof rule.fieldFingerprint === "string" &&
+    isObject(rule.fieldDescriptor) && typeof rule.profileId === "string" &&
+    ["pod16", "development"].includes(rule.profileSource) && typeof rule.profileKey === "string" &&
+    rule.ruleVersion === 1;
+}
+async function saveRememberedRule(pending, field, row) {
+  if (!row.profileKey || row.directAnswer || !pending.origin || !pending.profileId) throw new Error("This mapping cannot be remembered.");
+  const fact = pending.facts.find((item) => item.key === row.profileKey);
+  if (!fact?.value) throw new Error("The selected profile fact is unavailable and cannot be remembered.");
+  const mapped = formatSelectedFact(field, fact);
+  const currentMeaning = matchField(field, pending.facts);
+  if (mapped.status !== MATCH_STATUS.MATCHED || /conflict|application question|team leader/i.test(currentMeaning.reason || "")) {
+    throw new Error("This field meaning conflicts with the selected fact, so the mapping cannot be remembered.");
+  }
+  const rule = {
+    id: crypto.randomUUID(), origin: pending.origin, formFingerprint: pending.formFingerprint,
+    fieldFingerprint: await fingerprintField(field), fieldDescriptor: fieldSemanticDescriptor(field),
+    profileId: pending.profileId, profileSource: pending.profileSource, profileKey: row.profileKey,
+    ruleVersion: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  const rules = await getMemoryRules();
+  const existing = rules.findIndex((item) => item.origin === rule.origin && item.profileId === rule.profileId &&
+    item.profileSource === rule.profileSource && item.formFingerprint === rule.formFingerprint && item.fieldFingerprint === rule.fieldFingerprint);
+  if (existing >= 0) rule.id = rules[existing].id;
+  if (existing >= 0) rules[existing] = rule; else rules.push(rule);
+  await writeMemoryRules(rules);
+  return rule.id;
+}
+async function removeMemoryRule(id) {
+  const rules = await getMemoryRules();
+  await writeMemoryRules(rules.filter((rule) => rule.id !== id));
+}
+async function findRememberedRule(rules, { origin, profile, formFingerprint, field, facts }) {
+  const fieldFingerprint = await fingerprintField(field);
+  const rule = rules.find((item) => item.origin === origin && item.profileId === profile.id &&
+    item.profileSource === profile.profileSource && item.formFingerprint === formFingerprint &&
+    item.fieldFingerprint === fieldFingerprint && JSON.stringify(item.fieldDescriptor) === JSON.stringify(fieldSemanticDescriptor(field)));
+  if (!rule) return null;
+  const fact = facts.find((item) => item.key === rule.profileKey && item.value);
+  if (!fact) return null;
+  const proposal = formatSelectedFact(field, fact);
+  const detected = matchField(field, facts);
+  if (proposal.status !== MATCH_STATUS.MATCHED ||
+      /conflict|different profile facts|application question|team leader/i.test(detected.reason || "")) return null;
+  return rule;
+}
+async function hasStaleRule(rules, { origin, profile, formFingerprint, field, facts }) {
+  const fieldFingerprint = await fingerprintField(field);
+  const scoped = rules.filter((item) => item.origin === origin && item.profileId === profile.id && item.profileSource === profile.profileSource);
+  if (scoped.some((item) => item.formFingerprint !== formFingerprint || item.fieldFingerprint !== fieldFingerprint)) return true;
+  return scoped.some((item) => {
+    const fact = facts.find((candidate) => candidate.key === item.profileKey && candidate.value);
+    const detected = matchField(field, facts);
+    return item.formFingerprint === formFingerprint && item.fieldFingerprint === fieldFingerprint &&
+      (!fact || formatSelectedFact(field, fact).status !== MATCH_STATUS.MATCHED ||
+        /conflict|different profile facts|application question|team leader/i.test(detected.reason || ""));
+  });
+}
+
 async function dispatch(message) {
   await sessionReady;
   if ([MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
     MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE].includes(message.type)) return dispatchProfileApi(message);
+  if ([MESSAGE.MEMORY_LIST, MESSAGE.MEMORY_EDIT, MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_CLEAR].includes(message.type)) return dispatchMemory(message);
   if (message.type === MESSAGE.SCAN_ACTIVE_TAB) return scanActiveTab();
   if (message.type === MESSAGE.GET_PREVIEW) return previewResponse(await loadPending());
   if (message.type === MESSAGE.UPDATE_PREVIEW) return updatePreview(message);
@@ -195,18 +321,25 @@ async function scanActiveTab() {
 
   const now = Date.now();
   const fields = result.fields.filter(validDescriptor);
+  const formFingerprint = await fingerprintForm(fields);
+  const memoryRules = await getMemoryRules();
   const pending = {
     version: 1, token: crypto.randomUUID(), createdAt: now, expiresAt: now + PREVIEW_TTL_MS,
     tabId: tab.id, documentId: topDocument.documentId, origin: new URL(tab.url).origin,
     profileId: profile.id, profileVersion: profile.version, profileSource: profile.profileSource,
     profileName: profile.name, notices: result.summary?.notices || [], profileOrigin: profile.profileSource === "pod16" ? (await chrome.storage.local.get(API_SETTINGS_KEY))[API_SETTINGS_KEY].origin : null,
-    facts: profile.facts, fields,
-    rows: fields.map((field) => {
+    facts: profile.facts, fields, formFingerprint,
+    rows: await Promise.all(fields.map(async (field) => {
       const suggestion = matchField(field, profile.facts);
-      return { fieldId: field.id, profileKey: suggestion.profileKey, suggestionKey: suggestion.profileKey,
+      const memoryContext = { origin: new URL(tab.url).origin, profile, formFingerprint, field, facts: profile.facts };
+      const remembered = await findRememberedRule(memoryRules, memoryContext);
+      const stale = !remembered && await hasStaleRule(memoryRules, memoryContext);
+      return { fieldId: field.id, profileKey: remembered?.profileKey || suggestion.profileKey, suggestionKey: suggestion.profileKey,
         suggestionStatus: suggestion.status, suggestionReason: suggestion.reason, directAnswer: Boolean(suggestion.directAnswer), projectChoice: Boolean(suggestion.projectChoice), mappingChanged: false,
-        valueOverride: null, include: false, overwrite: false };
-    })
+        rememberedRuleId: remembered?.id || null, memoryStatus: remembered ? "suggested" : stale ? "rejected" : "",
+        memoryReason: remembered ? "Remembered mapping suggestion from this website and form. Review it and approve any fill." : stale ? "A remembered mapping was rejected because its field meaning, form context or available profile facts are now incompatible. Review the mapping." : "",
+        rememberMapping: false, valueOverride: null, include: false, overwrite: false };
+    }))
   };
   await savePending(pending);
   return previewResponse(pending);
@@ -227,9 +360,27 @@ async function updatePreview(message) {
     if (!field.eligible) throw new Error("This control is unsupported and cannot be mapped for filling.");
     if (row.directAnswer) throw new Error("Application questions accept only a direct per-fill answer, not a profile fact.");
     if (row.projectChoice && selectedFact && selectedFact.type !== "project_snapshot") throw new Error("Choose an explicitly approved project snapshot.");
+    if (row.rememberedRuleId) await removeMemoryRule(row.rememberedRuleId);
     row.profileKey = value;
     row.mappingChanged = true;
     row.valueOverride = null;
+    row.rememberMapping = false;
+    row.rememberedRuleId = null;
+    row.memoryStatus = "";
+    row.memoryReason = "";
+  } else if (key === "rememberMapping") {
+    if (typeof value !== "boolean" || !row.mappingChanged || !row.profileKey || row.directAnswer) throw new Error("Correct a profile mapping before remembering it.");
+    row.rememberMapping = value;
+    if (value) {
+      row.rememberedRuleId = await saveRememberedRule(pending, field, row);
+      row.memoryStatus = "saved";
+      row.memoryReason = "Remembered for this website and form. It will remain a suggestion that requires your approval.";
+    } else if (row.rememberedRuleId) {
+      await removeMemoryRule(row.rememberedRuleId);
+      row.rememberedRuleId = null;
+      row.memoryStatus = "";
+      row.memoryReason = "";
+    }
   } else if (key === "valueOverride") {
     if (typeof value !== "string" || value.length > 12000 || !field.eligible) throw new Error("The per-fill value is invalid for this field.");
     if (field.kind === "select" && value && field.options.filter((option) => option.value === value && !option.disabled).length !== 1) throw new Error("Choose one unique enabled native option.");
@@ -263,7 +414,7 @@ function previewResponse(pending) {
 function previewRow(row, field, facts) {
   let proposal;
   let fact = null;
-  if (row.mappingChanged) {
+  if (row.mappingChanged || row.rememberedRuleId) {
     fact = facts.find((item) => item.key === row.profileKey) || null;
     proposal = fact ? formatSelectedFact(field, fact) : { status: MATCH_STATUS.NEEDS_CHOICE, reason: "No profile fact is mapped to this field." };
   } else {
@@ -272,6 +423,7 @@ function previewRow(row, field, facts) {
   }
   let status = proposal.status || row.suggestionStatus;
   let reason = proposal.reason || row.suggestionReason;
+  if (row.memoryReason) reason = `${row.memoryReason} ${reason}`;
   let value = proposal.composedValue || proposal.formattedValue || fact?.value || "";
   let source = fact?.source || "No source selected";
   if (proposal.composedKeys?.length) {
@@ -292,7 +444,9 @@ function previewRow(row, field, facts) {
     field, fieldId: row.fieldId, profileKey: row.profileKey,
     profileLabel: row.directAnswer ? "Direct answer" : (fact?.label || (row.projectChoice ? "Choose approved project" : "No profile fact")),
     value, displayValue: option?.label || value, source, status, reason,
-    include: row.include, overwrite: row.overwrite, directAnswer: row.directAnswer, projectChoice: row.projectChoice
+    include: row.include, overwrite: row.overwrite, directAnswer: row.directAnswer, projectChoice: row.projectChoice,
+    remembered: Boolean(row.rememberedRuleId), memoryStatus: row.memoryStatus || "", memoryReason: row.memoryReason || "",
+    rememberMapping: Boolean(row.rememberMapping), canRemember: Boolean(row.mappingChanged && row.profileKey && !row.directAnswer)
   };
 }
 

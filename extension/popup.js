@@ -140,6 +140,21 @@ function createRow(row, profile) {
   mappingLabel.append(mapping);
   card.append(mappingLabel);
 
+  if (row.canRemember) {
+    const rememberLabel = document.createElement("label");
+    const remember = document.createElement("input");
+    remember.type = "checkbox";
+    remember.checked = row.rememberMapping;
+    remember.disabled = currentPreview.filling || isBusy;
+    remember.addEventListener("change", () => sendChange(row.fieldId, { rememberMapping: remember.checked }, true));
+    rememberLabel.append(remember, document.createTextNode(" Remember this mapping for this website and form"));
+    card.append(rememberLabel);
+    const memoryHelp = document.createElement("p");
+    memoryHelp.className = "muted";
+    memoryHelp.textContent = "Stores the field meaning and selected profile fact key. It never stores the filled value, and still requires your approval each time.";
+    card.append(memoryHelp);
+  }
+
   const valueLabel = document.createElement("label");
   valueLabel.append(document.createTextNode(row.directAnswer ? "Your answer for this fill only" : row.field.kind === "select" ? "Native option for this fill" : "Value for this fill only"));
   const value = row.field.kind === "select" ? document.createElement("select") : document.createElement("textarea");

@@ -17,7 +17,11 @@ export const MESSAGE = Object.freeze({
   API_LIST_PROFILES: "pluma/api-list-profiles",
   API_READ_PROFILE: "pluma/api-read-profile",
   API_CREATE_PROFILE: "pluma/api-create-profile",
-  API_UPDATE_PROFILE: "pluma/api-update-profile"
+  API_UPDATE_PROFILE: "pluma/api-update-profile",
+  MEMORY_LIST: "pluma/memory-list",
+  MEMORY_EDIT: "pluma/memory-edit",
+  MEMORY_DELETE: "pluma/memory-delete",
+  MEMORY_CLEAR: "pluma/memory-clear"
 });
 
 /**

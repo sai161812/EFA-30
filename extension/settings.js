@@ -19,6 +19,7 @@ void initialize();
 async function initialize() {
   try {
     const response = await send(MESSAGE.API_STATUS);
+    await refreshMemoryRules();
     if (response.origin) document.querySelector("#api-origin").value = response.origin;
     document.querySelector("#auth-state").textContent = response.authenticated ? "Signed in for this browser session." : "Sign in required. Browser restart clears this session.";
     if (response.authenticated) await refreshProfiles(response.selectedProfileId);
@@ -178,5 +179,72 @@ async function send(type, fields = {}) {
   if (!isMessageType(response, type)) throw new Error("The extension returned an unexpected profile response.");
   return response;
 }
+
+async function refreshMemoryRules() {
+  try {
+    const result = await send(MESSAGE.MEMORY_LIST);
+    const list = document.querySelector("#memory-rules");
+    list.replaceChildren();
+    for (const rule of result.rules) list.append(createMemoryRuleRow(rule));
+    document.querySelector("#memory-empty").hidden = result.rules.length > 0;
+    document.querySelector("#clear-memory").disabled = result.rules.length === 0;
+  } catch (error) { showError(error); }
+}
+
+function createMemoryRuleRow(rule) {
+  const card = document.createElement("article");
+  card.className = "memory-rule";
+  const heading = document.createElement("h3");
+  heading.textContent = rule.fieldDescriptor.label || "Unnamed field";
+  card.append(heading);
+  const details = document.createElement("p");
+  details.textContent = `${rule.origin} · ${rule.fieldDescriptor.kind}/${rule.fieldDescriptor.inputType} · ${rule.fieldDescriptor.context || "No section context"}`;
+  card.append(details);
+  const scope = document.createElement("p");
+  scope.textContent = `Profile: ${rule.profileId} (${rule.profileSource}) · Fact key: ${rule.profileKey} · Rule version: ${rule.ruleVersion}`;
+  card.append(scope);
+  const editor = document.createElement("label");
+  editor.textContent = "Profile fact key";
+  const keyInput = document.createElement("input");
+  keyInput.value = rule.profileKey;
+  keyInput.maxLength = 80;
+  keyInput.pattern = "[a-zA-Z0-9_.-]{1,80}";
+  editor.append(keyInput);
+  card.append(editor);
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "Save rule";
+  save.addEventListener("click", async () => {
+    try {
+      await send(MESSAGE.MEMORY_EDIT, { ruleId: rule.id, profileKey: keyInput.value.trim() });
+      await refreshMemoryRules();
+      status.textContent = "Remembered mapping updated. It will be checked against current form meaning and profile facts before use.";
+    } catch (error) { showError(error); }
+  });
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "secondary";
+  remove.textContent = "Delete rule";
+  remove.addEventListener("click", async () => {
+    try {
+      await send(MESSAGE.MEMORY_DELETE, { ruleId: rule.id });
+      await refreshMemoryRules();
+      status.textContent = "Remembered mapping deleted.";
+    } catch (error) { showError(error); }
+  });
+  actions.append(save, remove);
+  card.append(actions);
+  return card;
+}
+
+document.querySelector("#clear-memory").addEventListener("click", async () => {
+  try {
+    await send(MESSAGE.MEMORY_CLEAR);
+    await refreshMemoryRules();
+    status.textContent = "All remembered mappings cleared.";
+  } catch (error) { showError(error); }
+});
 
 function showError(error) { status.textContent = error?.message || "POD-16 profile settings could not be updated."; }
