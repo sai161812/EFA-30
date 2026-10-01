@@ -12,7 +12,7 @@ function makeRuntime() {
   let onMessage;
   const scanResult = {
     type: "pluma/scan-result",
-    fields: [{ id: "field-1", kind: "input", label: "Email", ariaLabels: [], autocomplete: "email", name: "email", domId: "", placeholder: "", context: "", inputType: "email", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0 }],
+    fields: [{ id: "field-1", kind: "input", label: "Email", ariaLabels: [], instructions: [], autocomplete: "email", name: "email", domId: "", placeholder: "", context: "", inputType: "email", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0 }],
     summary: { total: 1, eligible: 1, blocked: 0 }
   };
   globalThis.chrome = {
@@ -238,7 +238,7 @@ test("a non-empty field needs its own overwrite approval", async () => {
 
 test("project snapshots require an explicit choice and show the selected source", async () => {
   const runtime = makeRuntime();
-  runtime.setFields([{ id: "project-1", kind: "textarea", label: "Describe a project", ariaLabels: [], autocomplete: "", name: "project", domId: "", placeholder: "", context: "Internship placement", inputType: "textarea", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0, options: [], maxLength: -1 }]);
+  runtime.setFields([{ id: "project-1", kind: "textarea", label: "Describe a project", ariaLabels: [], instructions: [], autocomplete: "", name: "project", domId: "", placeholder: "", context: "Internship placement", inputType: "textarea", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0, options: [], maxLength: -1 }]);
   await loadWorker(runtime, "project-choice-test");
   const preview = await send(runtime, { type: "pluma/scan-active-tab" });
   assert.equal(preview.rows[0].projectChoice, true);
@@ -254,7 +254,7 @@ test("project snapshots require an explicit choice and show the selected source"
 
 test("application questions reject profile facts and accept only a direct per-fill answer", async () => {
   const runtime = makeRuntime();
-  runtime.setFields([{ id: "question-1", kind: "textarea", label: "Why are you motivated to apply?", ariaLabels: [], autocomplete: "", name: "motivation", domId: "", placeholder: "", context: "Internship placement", inputType: "textarea", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0, options: [], maxLength: -1 }]);
+  runtime.setFields([{ id: "question-1", kind: "textarea", label: "Why are you motivated to apply?", ariaLabels: [], instructions: [], autocomplete: "", name: "motivation", domId: "", placeholder: "", context: "Internship placement", inputType: "textarea", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0, options: [], maxLength: -1 }]);
   await loadWorker(runtime, "direct-answer-test");
   const preview = await send(runtime, { type: "pluma/scan-active-tab" });
   assert.equal(preview.rows[0].directAnswer, true);

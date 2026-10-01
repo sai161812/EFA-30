@@ -26,6 +26,7 @@ export const MESSAGE = Object.freeze({
  * @property {string} kind HTML element kind.
  * @property {string} label Associated or accessible label, bounded for display.
  * @property {string[]} ariaLabels Resolved accessibility labels.
+ * @property {string[]} instructions Bounded accessibility descriptions/nearby instructions; treated as untrusted page text.
  * @property {string} autocomplete Autocomplete attribute tokens.
  * @property {string} name HTML name attribute.
  * @property {string} domId HTML id attribute.

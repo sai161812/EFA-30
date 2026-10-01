@@ -326,7 +326,7 @@ async function approveAndFill() {
     else if (view.status !== MATCH_STATUS.MATCHED) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: view.reason || "Resolve this field in preview before filling." });
     else if (!view.value) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "No value is available. Choose a fact or enter a per-fill value." });
     else if (view.value.length > 4000) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "This value is too long for a supported form field." });
-    else if (field.maxLength > 0 && view.value.length > field.maxLength) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: `This value exceeds the field's ${field.maxLength}-character limit and will not be truncated.` });
+    else if (Number.isInteger(field.maxLength) && field.maxLength >= 0 && view.value.length > field.maxLength) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: `This value exceeds the field's ${field.maxLength}-character limit and will not be truncated.` });
     else if (field.kind === "select" && field.options.filter((option) => option.value === view.value && !option.disabled).length !== 1) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "Choose one unique enabled option from this native select." });
     else if (field.inputType === "date" && !validIsoDate(view.value)) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "A complete valid YYYY-MM-DD date is required." });
     else if (field.hasValue && !row.overwrite) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "This field already has a value. Approve overwrite for this field to replace it." });

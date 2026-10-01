@@ -4,7 +4,7 @@ import { matchField, formatAddress, formatDateForField, MATCH_STATUS } from "../
 import { DEVELOPMENT_PROFILE } from "../extension/development/profile.js";
 
 function field(overrides = {}) {
-  return { id: "field-1", kind: "input", label: "", ariaLabels: [], autocomplete: "", name: "", domId: "", placeholder: "", context: "", inputType: "text", hasValue: false, eligible: true, unsupportedReason: "", revision: 0, options: [], maxLength: -1, ...overrides };
+  return { id: "field-1", kind: "input", label: "", ariaLabels: [], autocomplete: "", name: "", domId: "", placeholder: "", context: "", instructions: [], inputType: "text", hasValue: false, eligible: true, unsupportedReason: "", revision: 0, options: [], maxLength: -1, ...overrides };
 }
 const facts = DEVELOPMENT_PROFILE.facts;
 
@@ -23,9 +23,27 @@ test("exact aliases match but context must not cross personal, college, company,
   assert.equal(matchField(field({ label: "Personal email" }), facts).profileKey, "personalEmail");
   assert.equal(matchField(field({ label: "College email" }), facts).profileKey, "collegeEmail");
   assert.equal(matchField(field({ label: "Institution", context: "Education at your college" }), facts).profileKey, "college");
-  assert.equal(matchField(field({ label: "Company", context: "Internship placement" }), facts).status, MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(matchField(field({ label: "Company", context: "Internship placement" }), facts).status, MATCH_STATUS.MISSING_VALUE);
   assert.equal(matchField(field({ label: "Company name", context: "Education institution" }), facts).status, MATCH_STATUS.NEEDS_CHOICE);
 });
+
+test("group context separates college and personal email when field text only says Email", () => {
+  assert.equal(matchField(field({ label: "Email", context: "Education at your college" }), facts).profileKey, "collegeEmail");
+  assert.equal(matchField(field({ label: "Email", context: "Personal information" }), facts).profileKey, "personalEmail");
+  assert.equal(matchField(field({ label: "Email", context: "Education at your college", autocomplete: "email" }), facts).status, MATCH_STATUS.NEEDS_CHOICE);
+  const company = { key: "companyName", label: "Company name", value: "Example Labs", aliases: ["company name"], type: "text", source: "Approved" };
+  assert.equal(matchField(field({ label: "Name", context: "Company details" }), [company]).profileKey, "companyName");
+  assert.equal(matchField(field({ label: "Name", context: "College details" }), facts).profileKey, "college");
+});
+test("address component fields receive only that component, not a joined address", () => {
+  const postal = matchField(field({ label: "Postal code", name: "postal_code", context: "Current mailing address" }), facts);
+  assert.equal(postal.status, MATCH_STATUS.MATCHED);
+  assert.equal(postal.profileKey, "currentPostalCode");
+  assert.equal(postal.composedValue, undefined);
+  const city = matchField(field({ label: "City", name: "city", context: "Current mailing address" }), facts);
+  assert.equal(city.profileKey, "currentCity");
+});
+
 test("address composition uses only known components from its explicit scope", () => {
   const result = matchField(field({ label: "Address", context: "Permanent mailing address" }), facts);
   assert.equal(result.status, MATCH_STATUS.MATCHED);
@@ -58,4 +76,5 @@ test("year-only facts never create a full date or month/day", () => {
 test("oversized descriptions are never silently shortened", () => {
   const longFact = { key: "about", label: "About", value: "x".repeat(80), aliases: ["about"], source: "approved", type: "text" };
   assert.equal(matchField(field({ label: "About", maxLength: 50 }), [longFact]).status, MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(matchField(field({ label: "About", maxLength: 0 }), [{ ...longFact, value: "x" }]).status, MATCH_STATUS.NEEDS_CHOICE);
 });

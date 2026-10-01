@@ -96,7 +96,7 @@ function createRow(row, profile) {
   card.append(title);
   const context = document.createElement("p");
   context.className = "context";
-  context.textContent = [row.field.context, row.field.placeholder ? `Placeholder: ${row.field.placeholder}` : ""].filter(Boolean).join(" · ");
+  context.textContent = [row.field.context, row.field.placeholder ? `Placeholder: ${row.field.placeholder}` : "", ...(row.field.instructions || []).map((value) => `Instruction: ${value}`)].filter(Boolean).join(" · ");
   card.append(context);
   const state = document.createElement("p");
   state.className = "match-state";

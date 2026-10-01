@@ -16,7 +16,7 @@ class FakeInput {
     this.visible = options.visible !== false;
     this._value = options.value || "";
     this.labels = options.label ? [{ innerText: options.label, textContent: options.label, cloneNode() { return { innerText: options.label, textContent: options.label, querySelectorAll() { return []; } }; } }] : [];
-    this.attributes = { name: this.name, placeholder: this.placeholder, autocomplete: this.autocomplete, "aria-label": options.ariaLabel || "", "aria-labelledby": "" };
+    this.attributes = { name: this.name, placeholder: this.placeholder, autocomplete: this.autocomplete, "aria-label": options.ariaLabel || "", "aria-labelledby": "", "aria-describedby": options.ariaDescribedBy || "", "aria-description": options.ariaDescription || "" };
     this.controlled = options.controlled || false;
     this.onInput = options.onInput || null;
     this.isConnected = true;
@@ -54,7 +54,7 @@ class FakeTextarea extends FakeInput {
   constructor(options = {}) { super({ ...options, tagName: "TEXTAREA" }); }
 }
 
-async function contentHarness(fields) {
+async function contentHarness(fields, references = {}) {
   const runtimeListeners = [];
   const documentListeners = {};
   const context = {
@@ -62,7 +62,7 @@ async function contentHarness(fields) {
     document: {
       querySelectorAll() { return fields; },
       addEventListener(type, callback) { (documentListeners[type] ||= []).push(callback); },
-      getElementById() { return null; }
+      getElementById(id) { return references[id] || null; }
     },
     HTMLInputElement: FakeInput,
     HTMLTextAreaElement: FakeTextarea,
@@ -75,10 +75,15 @@ async function contentHarness(fields) {
   const source = fs.readFileSync(new URL("../extension/content/content-script.js", import.meta.url), "utf8");
   vm.runInNewContext(source, context);
   vm.runInNewContext(source, context);
-  const sender = { id: "extension-test", url: "chrome-extension://extension-test/extension/service-worker-v1.js" };
+  const sender = { id: "extension-test", url: "chrome-extension://extension-test/extension/service-worker.js" };
   return {
     listeners: runtimeListeners,
     documentListeners,
+    dispatch(message, from = sender) {
+      let response;
+      const keepAlive = runtimeListeners[0](message, from, (value) => { response = value; });
+      return { keepAlive, response };
+    },
     async request(message) {
       return new Promise((resolve) => {
         const keepAlive = runtimeListeners[0](message, sender, resolve);
@@ -200,4 +205,28 @@ test("a silent programmatic value edit since preview is invalidated without expo
   assert.equal(result.outcomes[0].status, "skipped");
   assert.equal(field.value, "Changed without an input event");
   assert.equal("value" in scan.fields[0], false);
+});
+
+
+test("only the service worker can request a scan or approved fill", async () => {
+  const field = new FakeInput({ label: "Email" });
+  const harness = await contentHarness([field]);
+  const forged = harness.dispatch({ type: "pluma/scan-page" }, { id: "extension-test", url: "chrome-extension://extension-test/extension/settings.html" });
+  assert.equal(forged.keepAlive, false);
+  assert.equal(forged.response, undefined);
+});
+
+test("scan carries bounded ancestor group context and accessible instructions", async () => {
+  const heading = (tag, value) => ({ innerText: value, textContent: value, matches(selector) { return selector.split(", ").includes(tag); } });
+  const education = { tagName: "SECTION", attributes: {}, children: [heading("h2", "Education details")], parentElement: null,
+    matches(selector) { return selector.includes("section"); }, getAttribute() { return ""; } };
+  const group = { tagName: "FIELDSET", attributes: {}, children: [heading("legend", "Student contact")], parentElement: education,
+    matches(selector) { return selector.includes("fieldset"); }, getAttribute() { return ""; } };
+  const note = { textContent: "Use the address from your college account", matches() { return false; } };
+  const field = new FakeInput({ type: "email", label: "Email", ariaDescribedBy: "field-note" });
+  field.parentElement = group;
+  const harness = await contentHarness([field], { "field-note": note });
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  assert.match(scan.fields[0].context, /Education details.*Student contact/);
+  assert.equal(Array.from(scan.fields[0].instructions).join(" | "), "Use the address from your college account");
 });

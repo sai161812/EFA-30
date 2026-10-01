@@ -33,8 +33,7 @@
   });
 
   function isTrustedWorker(sender) {
-    return sender.id === chrome.runtime.id && typeof sender.url === "string" &&
-      sender.url.startsWith(EXTENSION_PREFIX) && sender.tab === undefined;
+    return sender.id === chrome.runtime.id && sender.url === `${EXTENSION_PREFIX}extension/service-worker.js` && sender.tab === undefined;
   }
 
   function noteEdit(event) {
@@ -57,19 +56,21 @@
     }
     state.valueSnapshots.set(element, currentValue);
     const ariaLabels = getAriaLabels(element);
+    const instructions = getAriaDescriptions(element);
     const label = clean(element.labels ? [...element.labels].map(labelText).join(" ") : "") ||
       ariaLabels[0] || clean(element.getAttribute("placeholder")) || clean(element.getAttribute("name")) || clean(element.id) || element.tagName.toLowerCase();
     const autocomplete = clean(element.getAttribute("autocomplete"));
     const inputType = element instanceof HTMLInputElement ? (element.type || "text").toLowerCase() : isNativeSelect(element) ? (element.multiple ? "select-multiple" : "select-one") : element.tagName.toLowerCase();
     const context = getContext(element);
     const visible = isVisible(element);
-    const unsupportedReason = exclusionReason(element, inputType, autocomplete, [label, ...ariaLabels, context].join(" ")) || (!visible ? "This field is no longer visible." : "");
+    const unsupportedReason = exclusionReason(element, inputType, autocomplete, [label, ...ariaLabels, ...instructions, context].join(" ")) || (!visible ? "This field is no longer visible." : "");
     const eligible = visible && !unsupportedReason && !isDisabled(element) && !element.readOnly && ["text", "email", "tel", "textarea", "date", "select-one"].includes(inputType);
     return {
       id,
       kind: element.tagName.toLowerCase(),
       label,
       ariaLabels,
+      instructions,
       autocomplete,
       name: clean(element.getAttribute("name")),
       domId: clean(element.id),
@@ -112,16 +113,41 @@
     return [...new Set(values)].slice(0, 4);
   }
 
+  function getAriaDescriptions(element) {
+    const values = [];
+    const description = clean(element.getAttribute("aria-description"));
+    if (description) values.push(description);
+    const describedBy = clean(element.getAttribute("aria-describedby")).split(/\s+/).filter(Boolean);
+    for (const id of describedBy) {
+      const referenced = document.getElementById(id);
+      if (referenced?.matches?.("input, textarea, select, button")) continue;
+      const text = clean(referenced?.innerText || referenced?.textContent);
+      if (text) values.push(text);
+    }
+    return [...new Set(values)].slice(0, 4);
+  }
+
   function getContext(element) {
-    const group = element.closest("fieldset, [role='group'], [role='region'], section");
     const form = element.form || element.closest("form");
-    const groupLabel = group?.querySelector("legend, h1, h2, h3, h4");
-    const groupAria = readReferencedText(group, "aria-labelledby");
+    const labels = [];
     const formLabel = clean(form?.getAttribute("aria-label") || form?.getAttribute("name"));
-    const groupName = clean(group?.getAttribute("aria-label") || groupAria || groupLabel?.innerText || groupLabel?.textContent);
-    const formHeading = form?.querySelector("legend, h1, h2, h3, h4");
-    const heading = clean(formHeading?.innerText || formHeading?.textContent);
-    return [formLabel, groupName, heading].filter(Boolean).join(" · ").slice(0, 240);
+    if (formLabel) labels.push(formLabel);
+    const formHeading = [...(form?.children || [])].find((child) => child.matches?.("legend, h1, h2, h3, h4"));
+    const directFormHeading = clean(formHeading?.innerText || formHeading?.textContent);
+    if (directFormHeading) labels.push(directFormHeading);
+
+    const ancestors = [];
+    let ancestor = element.parentElement;
+    for (let depth = 0; ancestor && depth < 12 && ancestors.length < 5; depth += 1, ancestor = ancestor.parentElement) {
+      if (!ancestor.matches?.("fieldset, [role='group'], [role='region'], section")) continue;
+      const aria = clean(ancestor.getAttribute("aria-label") || readReferencedText(ancestor, "aria-labelledby"));
+      const directHeading = [...(ancestor.children || [])].find((child) => child.matches?.("legend, h1, h2, h3, h4"));
+      const heading = clean(directHeading?.innerText || directHeading?.textContent);
+      const value = aria || heading;
+      if (value && !ancestors.includes(value)) ancestors.push(value);
+    }
+    labels.push(...ancestors.reverse());
+    return [...new Set(labels)].join(" · ").slice(0, 240);
   }
 
   function readReferencedText(element, attribute) {
@@ -201,7 +227,7 @@
         outcomes.push(outcome(item.fieldId, "skipped", "The approved option is no longer a unique enabled choice."));
         continue;
       }
-      if (current.maxLength > 0 && item.value.length > current.maxLength) {
+      if (current.maxLength >= 0 && item.value.length > current.maxLength) {
         outcomes.push(outcome(item.fieldId, "skipped", "The approved value exceeds this field’s character limit; it was not truncated."));
         continue;
       }
@@ -222,7 +248,7 @@
   }
 
   function sameSemantics(expected, current) {
-    const keys = ["id", "kind", "label", "ariaLabels", "autocomplete", "name", "domId", "placeholder", "context", "inputType", "options", "multiple", "maxLength", "visible", "hasValue", "eligible", "revision"];
+    const keys = ["id", "kind", "label", "ariaLabels", "instructions", "autocomplete", "name", "domId", "placeholder", "context", "inputType", "options", "multiple", "maxLength", "visible", "hasValue", "eligible", "revision"];
     return keys.every((key) => JSON.stringify(expected[key]) === JSON.stringify(current[key]));
   }
 
