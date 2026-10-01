@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PLUMA native control browser check</title>
+  <link rel="stylesheet" href="fixture.css">
+  <script src="native-controls.js" defer></script>
+</head>
+<body>
+  <main>
+    <h1>Native control browser check</h1>
+    <p>Fictional QA fields. Select the button to exercise the browser's native select and date setters and events.</p>
+    <label>Native single select
+      <select id="check-select"><option value="">Choose</option><option value="Junior">Junior</option></select>
+    </label>
+    <label>Native full date <input id="check-date" type="date"></label>
+    <button id="run-check" type="button">Run native controls check</button>
+    <output id="result" aria-live="polite">Not run</output>
+  </main>
+</body>
+</html>

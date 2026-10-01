@@ -45,7 +45,7 @@ function makeRuntime() {
     },
     scripting: { async executeScript({ target }) { calls.inject += 1; assert.equal(target.tabId, 7); return [{ frameId: 0, documentId: "document-a" }]; } }
   };
-  return { stored, calls, setActiveTab(value) { activeTab = value; }, setDocumentAvailable(value) { documentAvailable = value; }, setPrefilled(value) { scanResult.fields[0].hasValue = value; }, getListener() { return onMessage; } };
+  return { stored, calls, setActiveTab(value) { activeTab = value; }, setDocumentAvailable(value) { documentAvailable = value; }, setPrefilled(value) { scanResult.fields[0].hasValue = value; }, setFields(fields) { scanResult.fields = fields; scanResult.summary = { total: fields.length, eligible: fields.filter((field) => field.eligible).length, blocked: fields.filter((field) => !field.eligible).length }; }, getListener() { return onMessage; } };
 }
 
 async function loadWorker(runtime, name) {
@@ -233,4 +233,39 @@ test("a non-empty field needs its own overwrite approval", async () => {
   const approved = await send(runtime, { type: "pluma/approve-and-fill" });
   assert.equal(approved.outcomes.at(-1).status, "filled");
   assert.equal(runtime.calls.lastFillTarget.items[0].overwrite, true);
+});
+
+
+test("project snapshots require an explicit choice and show the selected source", async () => {
+  const runtime = makeRuntime();
+  runtime.setFields([{ id: "project-1", kind: "textarea", label: "Describe a project", ariaLabels: [], autocomplete: "", name: "project", domId: "", placeholder: "", context: "Internship placement", inputType: "textarea", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0, options: [], maxLength: -1 }]);
+  await loadWorker(runtime, "project-choice-test");
+  const preview = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(preview.rows[0].projectChoice, true);
+  assert.equal(preview.rows[0].profileKey, null);
+  await send(runtime, { type: "pluma/update-preview", fieldId: "project-1", changes: { profileKey: "projectSnapshotWeb" } });
+  const chosen = await send(runtime, { type: "pluma/get-preview" });
+  assert.match(chosen.rows[0].source, /manually approved project snapshot/);
+  assert.match(chosen.rows[0].value, /campus events planner/);
+  await send(runtime, { type: "pluma/update-preview", fieldId: "project-1", changes: { include: true } });
+  const result = await send(runtime, { type: "pluma/approve-and-fill" });
+  assert.equal(result.outcomes[0].status, "filled");
+});
+
+test("application questions reject profile facts and accept only a direct per-fill answer", async () => {
+  const runtime = makeRuntime();
+  runtime.setFields([{ id: "question-1", kind: "textarea", label: "Why are you motivated to apply?", ariaLabels: [], autocomplete: "", name: "motivation", domId: "", placeholder: "", context: "Internship placement", inputType: "textarea", visible: true, hasValue: false, eligible: true, unsupportedReason: "", revision: 0, options: [], maxLength: -1 }]);
+  await loadWorker(runtime, "direct-answer-test");
+  const preview = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(preview.rows[0].directAnswer, true);
+  assert.equal(preview.rows[0].profileKey, null);
+  const rejected = await send(runtime, { type: "pluma/update-preview", fieldId: "question-1", changes: { profileKey: "fullName" } });
+  assert.equal(rejected.type, "pluma/workflow-error");
+  await send(runtime, { type: "pluma/update-preview", fieldId: "question-1", changes: { valueOverride: "My direct answer for this application." } });
+  await send(runtime, { type: "pluma/update-preview", fieldId: "question-1", changes: { include: true } });
+  const ready = await send(runtime, { type: "pluma/get-preview" });
+  assert.equal(ready.rows[0].source, "Direct answer supplied for this fill");
+  assert.equal(ready.rows[0].value, "My direct answer for this application.");
+  const result = await send(runtime, { type: "pluma/approve-and-fill" });
+  assert.equal(result.outcomes[0].status, "filled");
 });

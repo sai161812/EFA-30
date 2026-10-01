@@ -1,5 +1,5 @@
 import { isMessageType, isObject, MESSAGE } from "./shared/contracts.js";
-import { matchField, MATCH_STATUS } from "./matching/matcher.js";
+import { matchField, formatSelectedFact, MATCH_STATUS } from "./matching/matcher.js";
 import { DEVELOPMENT_PROFILE } from "./development/profile.js";
 import { normalizeApiOrigin, requestProfileApi, validateProfile, validateProfileSummaryList } from "./profile-api.js";
 
@@ -199,12 +199,12 @@ async function scanActiveTab() {
     version: 1, token: crypto.randomUUID(), createdAt: now, expiresAt: now + PREVIEW_TTL_MS,
     tabId: tab.id, documentId: topDocument.documentId, origin: new URL(tab.url).origin,
     profileId: profile.id, profileVersion: profile.version, profileSource: profile.profileSource,
-    profileName: profile.name, profileOrigin: profile.profileSource === "pod16" ? (await chrome.storage.local.get(API_SETTINGS_KEY))[API_SETTINGS_KEY].origin : null,
+    profileName: profile.name, notices: result.summary?.notices || [], profileOrigin: profile.profileSource === "pod16" ? (await chrome.storage.local.get(API_SETTINGS_KEY))[API_SETTINGS_KEY].origin : null,
     facts: profile.facts, fields,
     rows: fields.map((field) => {
       const suggestion = matchField(field, profile.facts);
       return { fieldId: field.id, profileKey: suggestion.profileKey, suggestionKey: suggestion.profileKey,
-        suggestionStatus: suggestion.status, suggestionReason: suggestion.reason, mappingChanged: false,
+        suggestionStatus: suggestion.status, suggestionReason: suggestion.reason, directAnswer: Boolean(suggestion.directAnswer), projectChoice: Boolean(suggestion.projectChoice), mappingChanged: false,
         valueOverride: null, include: false, overwrite: false };
     })
   };
@@ -222,13 +222,18 @@ async function updatePreview(message) {
   if (!row || !field) throw new Error("That field is no longer in this preview.");
   const [key, value] = Object.entries(message.changes)[0];
   if (key === "profileKey") {
-    if (value !== null && !pending.facts.some((fact) => fact.key === value)) throw new Error("Choose a fact from the selected profile.");
+    const selectedFact = value === null ? null : pending.facts.find((fact) => fact.key === value);
+    if (value !== null && !selectedFact) throw new Error("Choose a fact from the selected profile.");
     if (!field.eligible) throw new Error("This control is unsupported and cannot be mapped for filling.");
+    if (row.directAnswer) throw new Error("Application questions accept only a direct per-fill answer, not a profile fact.");
+    if (row.projectChoice && selectedFact && selectedFact.type !== "project_snapshot") throw new Error("Choose an explicitly approved project snapshot.");
     row.profileKey = value;
     row.mappingChanged = true;
     row.valueOverride = null;
   } else if (key === "valueOverride") {
-    if (typeof value !== "string" || value.length > 4000 || !field.eligible) throw new Error("The per-fill value is invalid for this field.");
+    if (typeof value !== "string" || value.length > 12000 || !field.eligible) throw new Error("The per-fill value is invalid for this field.");
+    if (field.kind === "select" && value && field.options.filter((option) => option.value === value && !option.disabled).length !== 1) throw new Error("Choose one unique enabled native option.");
+    if (field.inputType === "date" && value && !validIsoDate(value)) throw new Error("Enter a valid complete date in YYYY-MM-DD format.");
     row.valueOverride = value;
   } else if (key === "include") {
     if (typeof value !== "boolean" || (value && !field.eligible)) throw new Error("Unsupported fields cannot be selected.");
@@ -247,7 +252,8 @@ function previewResponse(pending) {
     type: MESSAGE.GET_PREVIEW, pending: true,
     target: { tabId: pending.tabId, origin: pending.origin, documentId: pending.documentId },
     profile: { id: pending.profileId, name: pending.profileName, version: pending.profileVersion, source: pending.profileSource },
-    factOptions: pending.facts.map(({ key, label }) => ({ key, label })),
+    factOptions: pending.facts.map(({ key, label, type, source }) => ({ key, label, type, source })),
+    notices: pending.notices || [],
     expiresAt: pending.expiresAt, filling: Boolean(pending.filling),
     rows: pending.rows.map((row) => previewRow(row, pending.fields.find((field) => field.id === row.fieldId), pending.facts)),
     counts: { total: pending.fields.length, eligible: pending.fields.filter((field) => field.eligible).length }
@@ -255,29 +261,38 @@ function previewResponse(pending) {
 }
 
 function previewRow(row, field, facts) {
-  const fact = facts.find((item) => item.key === row.profileKey);
-  let status = row.suggestionStatus;
-  let reason = row.suggestionReason;
-  if (!field.eligible) {
-    status = MATCH_STATUS.UNSUPPORTED;
-    reason = field.unsupportedReason || "This control is unsupported.";
-  } else if (row.mappingChanged && row.profileKey) {
-    status = fact?.value ? MATCH_STATUS.MATCHED : MATCH_STATUS.MISSING_VALUE;
-    reason = fact ? `You chose ${fact.label} for this field.` : "Choose a profile fact or leave the field out.";
-  } else if (row.mappingChanged && !row.profileKey) {
-    status = MATCH_STATUS.NEEDS_CHOICE;
-    reason = "No profile fact is mapped to this field.";
+  let proposal;
+  let fact = null;
+  if (row.mappingChanged) {
+    fact = facts.find((item) => item.key === row.profileKey) || null;
+    proposal = fact ? formatSelectedFact(field, fact) : { status: MATCH_STATUS.NEEDS_CHOICE, reason: "No profile fact is mapped to this field." };
+  } else {
+    proposal = matchField(field, facts);
+    fact = facts.find((item) => item.key === proposal.profileKey) || null;
   }
+  let status = proposal.status || row.suggestionStatus;
+  let reason = proposal.reason || row.suggestionReason;
+  let value = proposal.composedValue || proposal.formattedValue || fact?.value || "";
+  let source = fact?.source || "No source selected";
+  if (proposal.composedKeys?.length) {
+    const components = proposal.composedKeys.map((key) => facts.find((item) => item.key === key)).filter(Boolean);
+    source = components.map((item) => `${item.label} (${item.source})`).join("; ");
+    value = proposal.composedValue || value;
+  }
+  if (!field.eligible) { status = MATCH_STATUS.UNSUPPORTED; reason = field.unsupportedReason || "This control is unsupported."; value = ""; }
+  if (row.directAnswer && row.valueOverride === null) { status = MATCH_STATUS.NEEDS_CHOICE; reason = row.suggestionReason; value = ""; fact = null; source = "Direct per-fill answer required"; }
   if (row.valueOverride !== null) {
+    value = row.valueOverride;
     status = row.valueOverride ? MATCH_STATUS.MATCHED : MATCH_STATUS.MISSING_VALUE;
-    reason = row.valueOverride ? "Value edited by you for this fill only; it will not be saved to the profile." : "The per-fill value is empty.";
+    reason = row.valueOverride ? (row.directAnswer ? "Answer supplied by you for this fill only; it will not be saved to the profile." : "Value edited by you for this fill only; it will not be saved to the profile.") : "The per-fill value is empty.";
+    source = row.directAnswer ? "Direct answer supplied for this fill" : "Edited for this fill";
   }
+  const option = field.kind === "select" ? (field.options || []).find((item) => item.value === value && !item.disabled) : null;
   return {
     field, fieldId: row.fieldId, profileKey: row.profileKey,
-    profileLabel: fact?.label || "No profile fact",
-    value: row.valueOverride !== null ? row.valueOverride : (fact?.value || ""),
-    source: row.valueOverride !== null ? "Edited for this fill" : (fact?.source || "No source selected"),
-    status, reason, include: row.include, overwrite: row.overwrite
+    profileLabel: row.directAnswer ? "Direct answer" : (fact?.label || (row.projectChoice ? "Choose approved project" : "No profile fact")),
+    value, displayValue: option?.label || value, source, status, reason,
+    include: row.include, overwrite: row.overwrite, directAnswer: row.directAnswer, projectChoice: row.projectChoice
   };
 }
 
@@ -308,8 +323,12 @@ async function approveAndFill() {
     const field = pending.fields.find((item) => item.id === row.fieldId);
     const view = previewRow(row, field, pending.facts);
     if (!field?.eligible) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "Unsupported field." });
+    else if (view.status !== MATCH_STATUS.MATCHED) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: view.reason || "Resolve this field in preview before filling." });
     else if (!view.value) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "No value is available. Choose a fact or enter a per-fill value." });
     else if (view.value.length > 4000) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "This value is too long for a supported form field." });
+    else if (field.maxLength > 0 && view.value.length > field.maxLength) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: `This value exceeds the field's ${field.maxLength}-character limit and will not be truncated.` });
+    else if (field.kind === "select" && field.options.filter((option) => option.value === view.value && !option.disabled).length !== 1) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "Choose one unique enabled option from this native select." });
+    else if (field.inputType === "date" && !validIsoDate(view.value)) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "A complete valid YYYY-MM-DD date is required." });
     else if (field.hasValue && !row.overwrite) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "This field already has a value. Approve overwrite for this field to replace it." });
     else valid.push({ fieldId: row.fieldId, value: view.value, overwrite: row.overwrite, expected: field });
   }
@@ -337,9 +356,15 @@ async function approveAndFill() {
   } finally { activeFillToken = null; }
 }
 
+function validIsoDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 function validDescriptor(field) {
   return isObject(field) && typeof field.id === "string" && typeof field.label === "string" && typeof field.eligible === "boolean" &&
-    typeof field.hasValue === "boolean" && typeof field.revision === "number" && ["input", "textarea", "select"].includes(field.kind);
+    typeof field.hasValue === "boolean" && (Array.isArray(field.options) || field.kind !== "select") && typeof field.revision === "number" && ["input", "textarea", "select"].includes(field.kind);
 }
 
 function validOutcomes(outcomes, approved) {

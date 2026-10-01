@@ -31,13 +31,15 @@ export const MESSAGE = Object.freeze({
  * @property {string} domId HTML id attribute.
  * @property {string} placeholder Placeholder text.
  * @property {string} context Bounded form/group context.
+ * @property {Array<{value:string,label:string,disabled:boolean}>} options Bounded native option descriptors; present for select controls.
+ * @property {number} maxLength Field limit, or -1 when there is no declared limit.
  * @property {string} inputType Input type or control kind.
  * @property {boolean} hasValue Whether the field currently has a value; never the value itself.
  * @property {boolean} eligible Whether the control is safe and supported for this phase.
  * @property {string} unsupportedReason Why a control is excluded, when applicable.
  * @property {number} revision Local edit counter, never page content.
  */
-/** @typedef {{key:string, label:string, type:string, value:string, source:string, updatedAt:string, aliases:string[]}} ProfileFact */
+/** @typedef {{key:string, label:string, type:string, value:string, source:string, updatedAt:string, aliases:string[], date_precision?:string|null}} ProfileFact */
 /** @typedef {{fieldId:string, profileKey:string|null, status:'matched'|'needs choice'|'missing value'|'unsupported', reason:string}} MatchProposal */
 /** @typedef {{tabId:number, documentId:string, origin:string, profileId:string, profileVersion:number, values:Array<{fieldId:string,value:string,overwrite:boolean}>}} ApprovedFill */
 /** @typedef {{fieldId:string, status:'filled'|'skipped'|'failed', message:string}} Outcome */

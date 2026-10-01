@@ -78,7 +78,7 @@ function renderPreview(data) {
   const source = data.profile.source === "pod16" ? "POD-16 approved facts" : "fictional development data";
   document.querySelector("#profile").textContent = `${data.profile.name} (version ${data.profile.version}; ${source})`;
   document.querySelector("#expiry").textContent = `This preview expires ${new Date(data.expiresAt).toLocaleTimeString()}.`;
-  document.querySelector("#summary").textContent = `${data.counts.eligible} eligible of ${data.counts.total} visible controls. Nothing is written until you approve.`;
+  document.querySelector("#summary").textContent = `${data.counts.eligible} eligible of ${data.counts.total} visible controls. Nothing is written until you approve. ${data.notices.join(" ")}`;
   rows.replaceChildren(...data.rows.map((row) => createRow(row, data.profile)));
   preview.hidden = false;
   document.querySelector("#approve").disabled = Boolean(data.filling);
@@ -120,14 +120,18 @@ function createRow(row, profile) {
   noMapping.value = "";
   noMapping.textContent = "No mapping";
   mapping.append(noMapping);
-  profileFacts().forEach((fact) => {
+  const factsForField = row.projectChoice ? profileFacts().filter((fact) => fact.type === "project_snapshot") : profileFacts();
+  factsForField.forEach((fact) => {
     const option = document.createElement("option");
     option.value = fact.key;
     option.textContent = fact.label;
     mapping.append(option);
   });
   mapping.value = row.profileKey || "";
-  mapping.disabled = !row.field.eligible || currentPreview.filling || isBusy;
+  mapping.className = "profile-mapping";
+  mapping.dataset.directAnswer = String(row.directAnswer);
+  mapping.disabled = !row.field.eligible || row.directAnswer || currentPreview.filling || isBusy;
+  if (row.directAnswer) mapping.setAttribute("aria-description", "Application questions accept direct per-fill answers only.");
   mapping.addEventListener("change", () => {
     if (timers.has(row.fieldId)) clearTimeout(timers.get(row.fieldId));
     timers.delete(row.fieldId);
@@ -137,14 +141,22 @@ function createRow(row, profile) {
   card.append(mappingLabel);
 
   const valueLabel = document.createElement("label");
-  valueLabel.append(document.createTextNode("Value for this fill only"));
-  const value = document.createElement("textarea");
-  value.rows = 2;
-  value.maxLength = 4000;
-  value.value = row.value;
+  valueLabel.append(document.createTextNode(row.directAnswer ? "Your answer for this fill only" : row.field.kind === "select" ? "Native option for this fill" : "Value for this fill only"));
+  const value = row.field.kind === "select" ? document.createElement("select") : document.createElement("textarea");
+  if (row.field.kind === "select") {
+    const empty = document.createElement("option"); empty.value = ""; empty.textContent = "Choose a native option"; value.append(empty);
+    (row.field.options || []).filter((option) => !option.disabled).forEach((optionData) => {
+      const option = document.createElement("option"); option.value = optionData.value; option.textContent = optionData.label; value.append(option);
+    });
+    value.value = row.value;
+    value.addEventListener("change", () => sendChange(row.fieldId, { valueOverride: value.value }, true));
+  } else {
+    value.rows = 2;
+    value.value = row.value;
+    value.addEventListener("input", () => scheduleValue(row.fieldId, value.value));
+  }
   value.disabled = !row.field.eligible || currentPreview.filling || isBusy;
-  value.setAttribute("aria-label", `Value for ${row.field.label}`);
-  value.addEventListener("input", () => scheduleValue(row.fieldId, value.value));
+  value.setAttribute("aria-label", row.directAnswer ? `Direct answer for ${row.field.label}` : `Value for ${row.field.label}`);
   valueLabel.append(value);
   card.append(valueLabel);
 
@@ -253,7 +265,7 @@ function setBusy(value) {
   document.querySelector("#approve").disabled = value || Boolean(currentPreview?.filling);
   document.querySelector("#cancel").disabled = value;
   rows.querySelectorAll("input, select, textarea").forEach((control) => {
-    control.disabled = value || control.closest(".field-card")?.dataset.eligible !== "true" || Boolean(currentPreview?.filling);
+    control.disabled = value || control.closest(".field-card")?.dataset.eligible !== "true" || Boolean(currentPreview?.filling) || control.dataset.directAnswer === "true";
   });
 }
 

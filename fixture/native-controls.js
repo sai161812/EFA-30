@@ -1,0 +1,20 @@
+const button = document.querySelector("#run-check");
+button.addEventListener("click", () => {
+  const select = document.querySelector("#check-select");
+  const date = document.querySelector("#check-date");
+  const events = { selectInput: 0, selectChange: 0, dateInput: 0, dateChange: 0 };
+  select.addEventListener("input", () => events.selectInput++);
+  select.addEventListener("change", () => events.selectChange++);
+  date.addEventListener("input", () => events.dateInput++);
+  date.addEventListener("change", () => events.dateChange++);
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "Junior");
+  select.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(date, "2027-05-20");
+  date.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  date.dispatchEvent(new Event("change", { bubbles: true }));
+  select.focus(); select.blur(); date.focus(); date.blur();
+  const passed = select.value === "Junior" && date.value === "2027-05-20" && Object.values(events).every((count) => count === 1);
+  document.querySelector("#result").textContent = `${passed ? "PASS" : "FAIL"}: select=${select.value || "empty"}, date=${date.value || "empty"}, events=${JSON.stringify(events)}`;
+});
+if (new URLSearchParams(location.search).has("run")) button.click();

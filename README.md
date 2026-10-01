@@ -1,6 +1,6 @@
-# PLUMA Autofill — Phase 2
+# PLUMA Autofill — Phase 3
 
-This repository contains a Chrome/Edge Manifest V3 extension and local synthetic form fixtures. It scans an authorized top-level HTTP/HTTPS page, proposes exact deterministic matches against one explicitly selected POD-16 profile, and fills only rows the user selects and approves. It never submits forms or clicks Next. Offline development mode remains available with a visible fictional profile label.
+This repository contains a Chrome/Edge Manifest V3 extension and local synthetic form fixtures. It scans an authorized top-level HTTP/HTTPS page, uses deterministic field and group context, and fills only rows the user selects and approves. Current/permanent address, personal/college email, institution/company and applicant/team-leader fields keep distinct meanings. Approved project snapshots require an explicit choice; application questions require a direct per-fill answer. Native single-select and full-date controls are supported when their values are unambiguous. It never submits forms or clicks Next. Offline development mode remains available with a visible fictional profile label.
 
 ## Load the extension in Chrome or Edge
 
@@ -29,7 +29,7 @@ Set-Location 'D:\Workspace\DEVEL\EFA-30'
 py -m http.server 8001 --directory fixture
 ```
 
-Keep the terminal open. In Chrome or Edge, open `http://localhost:8001/`, select the extension, then **Scan this page**. The popup shows the origin, selected profile and fact source, field label/context, value, matching reason and status. Rows start unchecked; nothing is inserted until **Approve and fill selected**. The prefilled email contents are not disclosed, and replacing it requires that field's separate overwrite approval.
+Keep the terminal open. In Chrome or Edge, open `http://localhost:8001/`, select the extension, then **Scan this page**. The popup shows the origin, selected profile and fact source, field label/context, value, matching reason and status. In the internship scenario, select one of the approved project snapshots, leave the motivation question unanswered or enter your own per-fill answer, review the team-leader email which is intentionally unresolved, and approve the unambiguous “Junior” native select. Expected graduation date stays unresolved because the fictional profile stores only a year. No form action is triggered. Rows start unchecked; nothing is inserted until **Approve and fill selected**. Existing page text is not disclosed, and replacing any prefilled entry requires that field's separate overwrite approval.
 
 Stop the fixture server with `Ctrl+C`. If `py` is unavailable, run `python -m http.server 8001 --directory fixture`.
 
@@ -41,8 +41,8 @@ Stop the fixture server with `Ctrl+C`. If `py` is unavailable, run `python -m ht
 - Profile data is re-read from POD-16 before scanning and revalidated by version immediately before filling. API outage, expired authentication or version change clears the preview and requires a fresh session/review.
 - The content script returns field descriptors and existing-value presence only. It receives selected values only in the final approved request for the recorded tab/document.
 - Hidden controls are not scanned. Password, OTP, payment/identity, signature, consent, upload, disabled and readonly controls are excluded. Existing values need explicit per-field overwrite approval.
-- `extension/matching/matcher.js` is a pure exact-alias/autocomplete matcher. It does not fuzzy-match, generate answers or infer missing facts.
-- Browser-internal pages such as `chrome://extensions` cannot be scanned; the popup shows a readable explanation. Exact document targeting uses Chromium `documentId` messaging (Chrome 106+).
+- `extension/matching/matcher.js` is pure and deterministic. It uses exact aliases and explicit semantic context, formats only complete stored dates, composes only known same-scope address parts, and leaves ambiguous fields unresolved. It does not fuzzy-match, split names, generate answers, infer missing facts or silently truncate values.
+- Browser-internal pages such as `chrome://extensions` cannot be scanned; the popup shows a readable explanation. Custom dropdowns, cross-origin frames and shadow DOM are not scanned, and are disclosed in the preview. Exact document targeting uses Chromium `documentId` messaging (Chrome 106+).
 
 ## Checks and browser walkthrough
 
@@ -57,10 +57,13 @@ For browser and live API verification:
 1. Load unpacked and confirm there are no manifest or service-worker errors.
 2. Start POD-16, create a synthetic profile client with only `autofill:profiles:read`, and connect in extension Settings to `http://127.0.0.1:8000`. Create profiles and add synthetic facts with both read and manage scopes.
 3. Start the fixture on port 8001, scan `http://localhost:8001/`, and check that the selected POD-16 fact, source and match reason appear. Disconnect POD-16 and rescan; confirm an API error and no fictional fallback.
-4. Leave all fields unchecked and approve; confirm nothing is written. Select one field and approve it. Confirm the prefilled email is skipped until its overwrite checkbox is separately selected.
+4. Leave all fields unchecked and approve; confirm nothing is written. Select one field and approve it. Confirm the prefilled entry is skipped until its overwrite checkbox is separately selected.
 5. With a second API client, change the selected profile after preview and approve. Confirm the old preview is rejected. Try reading projects, notes and `/v1/profile` with the read-only profile key; each must be denied.
 6. Sign out, restart the browser, and test an expired/revoked API key. Each requires fresh sign-in and blocks filling.
 7. Scan `http://localhost:8001/react-controlled.html`; approve Email, blur it, then activate **Read React state** and check the retained controlled value.
 8. Edit a page field or navigate while a preview is open; approve and confirm the changed target/field is rejected. Cancel a preview, reopen the popup, and confirm no pending preview remains.
+9. On the internship fixture, verify Team leader email needs a choice, choose one project snapshot and check its source, leave motivation unanswered, approve the unique Junior option, and confirm expected graduation date remains unresolved because only 2027 is stored.
+10. Click **Show additional application details**, scan again and confirm the current address appears in the fresh preview without the extension navigating the form.
+11. Open `http://localhost:8001/native-controls.html`, click **Run native controls check**, and confirm it reports PASS for the retained native select/date values and their input/change events.
 
-Automated extension checks pass. Backend HTTP integration tests are included but need an available isolated POD-16 PostgreSQL test database. Browser UI and live POD-16 testing were not available in this environment; use the steps above for those checks. The React fixture is separate from the extension UI and loads React only for its controlled-form test.
+Automated extension checks cover content-script native select/date fill and revalidation. A browser-native setter/event check is provided at `/native-controls.html`. Full popup interaction and live POD-16 testing require a manual Chrome/Edge session; use the steps above for those checks. The React fixture is separate from the extension UI and loads React only for its controlled-form test.

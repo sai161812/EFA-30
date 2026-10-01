@@ -3,23 +3,74 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PLUMA Autofill development form</title>
+  <title>Unfamiliar internship application · PLUMA fixture</title>
   <link rel="stylesheet" href="fixture.css">
+  <script src="fixture.js" defer></script>
 </head>
 <body>
   <main>
-    <h1>Internship application demo</h1>
-    <p>This local fixture contains synthetic form data. It does not submit anywhere.</p>
-    <form>
-      <label>Full name <input name="full_name" autocomplete="name" placeholder="Your full name"></label>
-      <label>Email address <input type="email" name="email" autocomplete="email" value="existing@example.test"></label>
-      <label>Phone number <input type="tel" name="phone" autocomplete="tel"></label>
-      <label>College <input type="text" name="college"></label>
-      <label>Short introduction <textarea name="introduction" rows="3"></textarea></label>
-      <label>Password <input type="password" name="password"></label>
-      <label>One-time code <input type="text" name="otp" autocomplete="one-time-code"></label>
-      <input type="hidden" name="internal_id" value="fixture-only">
-      <label>Disabled example <input type="text" name="disabled_example" disabled value="Unavailable"></label>
+    <h1>Northstar Summer Internship Application</h1>
+    <p>This local form uses fictional content and never submits. PLUMA scans only the visible top document.</p>
+    <form autocomplete="on">
+      <fieldset>
+        <legend>Applicant profile</legend>
+        <label>Applicant full name <input name="applicant_full_name" autocomplete="name"></label>
+        <label>Applicant personal email <input type="email" name="applicant_personal_email"></label>
+        <label>Phone number <input type="tel" name="applicant_phone" autocomplete="tel"></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Team leader contact</legend>
+        <p>This contact belongs to the team's leader and may be someone else.</p>
+        <label>Team leader email <input type="email" name="team_leader_email" autocomplete="email"></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Permanent mailing address</legend>
+        <label>Address <input name="permanent_address"></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Education at your college</legend>
+        <label>Institution <input name="institution"></label>
+        <label>College email <input type="email" name="college_email"></label>
+        <label>Current year of study
+          <select name="study_year">
+            <option value="">Choose a year</option>
+            <option value="Sophomore">Sophomore</option>
+            <option value="Junior">Junior</option>
+            <option value="Senior">Senior</option>
+          </select>
+        </label>
+        <label>Graduation year <input name="graduation_year" inputmode="numeric"></label>
+        <label>Expected graduation date <input type="date" name="expected_graduation_date"></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Internship placement</legend>
+        <label>Company you want to intern at <input name="target_company"></label>
+        <label>Describe a project you are proud of <textarea name="project_description" rows="3"></textarea></label>
+        <label>Why are you motivated to apply for this internship?
+          <textarea name="motivation" rows="4" placeholder="Write your own answer"></textarea>
+        </label>
+      </fieldset>
+
+      <details>
+        <summary>Excluded and safety controls</summary>
+        <label>Password <input type="password" name="password"></label>
+        <label>One-time code <input type="text" name="otp" autocomplete="one-time-code"></label>
+        <input type="hidden" name="internal_id" value="fixture-only">
+        <label>Disabled example <input type="text" name="disabled_example" disabled value="Unavailable"></label>
+        <label>Existing entry — overwrite needs its own approval <input type="text" name="existing_entry" value="Already entered"></label>
+      </details>
+      <section id="step-two" hidden>
+        <fieldset>
+          <legend>Additional application details</legend>
+          <label>Current mailing address <input name="current_address"></label>
+        </fieldset>
+      </section>
+      <button id="show-step" type="button" aria-expanded="false">Show additional application details</button>
+      <p>To simulate a multi-step form, reveal this section manually, then scan again in PLUMA. PLUMA never advances the form.</p>
     </form>
   </main>
 </body>
