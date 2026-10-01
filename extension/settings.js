@@ -6,6 +6,7 @@ const profileSelect = document.querySelector("#profile-select");
 const factList = document.querySelector("#fact-list");
 let summaries = [];
 let currentProfile = null;
+let apiConfigured = false;
 
 document.querySelector("#connect").addEventListener("click", connect);
 document.querySelector("#logout").addEventListener("click", logout);
@@ -13,6 +14,7 @@ document.querySelector("#select-profile").addEventListener("click", selectProfil
 document.querySelector("#create-profile").addEventListener("click", createProfile);
 document.querySelector("#add-fact").addEventListener("click", () => addFact());
 document.querySelector("#save-profile").addEventListener("click", saveProfile);
+document.querySelector("#development-profile-enabled").addEventListener("change", setDevelopmentProfile);
 profileSelect.addEventListener("change", () => void loadEditor(profileSelect.value));
 void initialize();
 
@@ -20,11 +22,30 @@ async function initialize() {
   try {
     const response = await send(MESSAGE.API_STATUS);
     await refreshMemoryRules();
+    const developmentToggle = document.querySelector("#development-profile-enabled");
+    developmentToggle.checked = response.developmentProfileEnabled;
+    apiConfigured = Boolean(response.origin);
+    developmentToggle.disabled = apiConfigured;
     if (response.origin) document.querySelector("#api-origin").value = response.origin;
-    document.querySelector("#auth-state").textContent = response.authenticated ? "Signed in for this browser session." : "Sign in required. Browser restart clears this session.";
+    document.querySelector("#auth-state").textContent = response.authenticated ? "Signed in for this browser session." : response.developmentProfileEnabled ? "Fictional development profile enabled by your choice." : "Sign in required. Browser restart clears this session.";
     if (response.authenticated) await refreshProfiles(response.selectedProfileId);
-    else status.textContent = response.origin ? "POD-16 is configured; sign in to load approved profiles." : "Offline mode uses the clearly identified fictional development profile.";
+    else status.textContent = response.origin ? "POD-16 is configured; sign in to load approved profiles." : response.developmentProfileEnabled ? "Fictional development profile enabled for local testing." : "No profile selected. Enable the fictional development profile in Settings or connect POD-16.";
   } catch (error) { showError(error); }
+}
+
+async function setDevelopmentProfile(event) {
+  const toggle = event.currentTarget;
+  toggle.disabled = true;
+  try {
+    const result = await send(MESSAGE.DEV_PROFILE_SET, { enabled: toggle.checked });
+    toggle.checked = result.enabled;
+    status.textContent = result.enabled
+      ? "Fictional development profile enabled. Select it explicitly when using the local fixture."
+      : "Fictional development profile disabled. Select a POD-16 profile before scanning.";
+  } catch (error) {
+    toggle.checked = !toggle.checked;
+    showError(error);
+  } finally { toggle.disabled = apiConfigured; }
 }
 
 async function connect() {
@@ -35,6 +56,9 @@ async function connect() {
     const permission = await chrome.permissions.request({ origins: [`${origin}/*`] });
     if (!permission) throw new Error("Permission for the configured POD-16 origin was not granted.");
     await send(MESSAGE.API_CONFIGURE, { origin });
+    apiConfigured = true;
+    document.querySelector("#development-profile-enabled").checked = false;
+    document.querySelector("#development-profile-enabled").disabled = true;
     const tokenControl = document.querySelector("#api-key");
     const login = await send(MESSAGE.API_LOGIN, { origin, token: tokenControl.value });
     tokenControl.value = "";

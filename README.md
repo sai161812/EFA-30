@@ -1,6 +1,6 @@
-# PLUMA Autofill — Phase 3
+# PLUMA Autofill — Phase 5
 
-This repository contains a Chrome/Edge Manifest V3 extension and local synthetic form fixtures. It scans an authorized top-level HTTP/HTTPS page, uses deterministic field and group context, and fills only rows the user selects and approves. Current/permanent address, personal/college email, institution/company and applicant/team-leader fields keep distinct meanings. Approved project snapshots require an explicit choice; application questions require a direct per-fill answer. Native single-select and full-date controls are supported when their values are unambiguous. It never submits forms or clicks Next. Offline development mode remains available with a visible fictional profile label.
+This repository contains a Chrome/Edge Manifest V3 extension and local synthetic form fixtures. It scans an authorized top-level HTTP/HTTPS page, uses deterministic field and group context, and fills only rows the user selects and approves. Current/permanent address, personal/college email, institution/company and applicant/team-leader fields keep distinct meanings. Approved project snapshots require an explicit choice; application questions require a direct per-fill answer. Native single-select and full-date controls are supported when their values are unambiguous. It never submits forms or clicks Next. Offline setup uses a fictional profile only after you explicitly enable it in Settings. It is never selected automatically or used after an API error.
 
 ## Load the extension in Chrome or Edge
 
@@ -16,7 +16,7 @@ The POD-16 checkout documents its local API at `http://127.0.0.1:8000`. From `D:
 
 Create a POD-16 client API key using the bootstrap/admin credential. For fill-only access grant `autofill:profiles:read`. To create and edit approved facts also grant `autofill:profiles:manage`. Do not grant projects, tasks, notes or wildcard access. POD-16 returns the generated key once; enter it in extension Settings. The key stays in trusted extension session storage and must be entered again after browser restart.
 
-In **Settings**, connect to `http://127.0.0.1:8000`, sign in, create or select a personal, college or professional profile, and add approved facts. Phone and postal-code values stay text. Enter year-only graduation dates with year precision. Add custom keys, labels, aliases and source labels as needed. The extension reads profile data only through its service worker. Configured API failures, denied scopes and expired keys stop the scan; they never fall back to development data.
+In **Settings**, either explicitly enable **Use fictional development profile** for offline work, or connect to `http://127.0.0.1:8000`, sign in, create or select a personal, college or professional profile, and add approved facts. Connecting to POD-16 disables the fictional profile. Phone and postal-code values stay text. Enter year-only graduation dates with year precision. Add custom keys, labels, aliases and source labels as needed. The extension reads profile data only through its service worker. Configured API failures, denied scopes and expired keys stop the scan; they never fall back to development data.
 
 POD-16 project import is not available in the inspected backend. Project snapshots can be entered manually in Settings after you have explicitly selected and approved their contents. Autofill never enumerates projects or notes.
 
@@ -69,3 +69,15 @@ For browser and live API verification:
 12. Correct a profile mapping in the preview, leave **Remember this mapping for this website and form** unchecked, then scan again and confirm no memory suggestion appears. Opt in on a correction and repeat: confirm the selected fact is suggested but not included, then change the label, section, type, origin or profile fact key and confirm the suggestion is rejected. Inspect and delete the rule in Settings.
 
 Automated extension checks cover content-script native select/date fill and revalidation. A browser-native setter/event check is provided at `/native-controls.html`. Full popup interaction and live POD-16 testing require a manual Chrome/Edge session; use the steps above for those checks. The React fixture is separate from the extension UI and loads React only for its controlled-form test.
+
+## Phase 5 evaluation
+
+Run the deterministic synthetic corpus runner:
+
+```powershell
+node evaluation/evaluate.mjs
+```
+
+The labels in `evaluation/corpus.mjs` are separate from matcher implementation. The corpus expands to 20 form runs across 10 authored template families and 200 fields, with five families held out. The runner reports cold-start precision and correct coverage, per-form local matcher time, and explicit zero-sample results where repeat-use, browser fills, API latency or human timing evidence is unavailable. It does not claim synthetic families are real independent websites. See [evaluation/REPORT.md](evaluation/REPORT.md) for denominators, limitations and the F1–F6 evidence checklist, and [evaluation/MANUAL_PROTOCOL.md](evaluation/MANUAL_PROTOCOL.md) for the counterbalanced completion-time protocol.
+
+The current report is not a release sign-off: Chrome/Edge browser verification, live POD-16 behavior, real saved-correction outcomes, observed fill reliability and human completion-time results still require evidence.

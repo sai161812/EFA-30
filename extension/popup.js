@@ -25,6 +25,8 @@ async function loadPendingPreview() {
 
 async function scan() {
   setBusy(true);
+  const scanButton = document.querySelector("#scan");
+  scanButton.textContent = "Scanning…";
   document.querySelector("#outcomes").hidden = true;
   setStatus("Scanning the active page…");
   try {
@@ -33,8 +35,7 @@ async function scan() {
     if (handleError(response)) return;
     renderPreview(response);
     setStatus(`Scanned ${response.target.origin}. Review each row and select values before filling.`);
-  } catch (error) { setStatus(error?.message || "The page could not be scanned."); }
-  finally { setBusy(false); }
+  } catch (error) { setStatus(error?.message || "The page could not be scanned."); } finally { scanButton.textContent = "Scan this page"; setBusy(false); }
 }
 
 async function approve() {
@@ -52,8 +53,7 @@ async function approve() {
     preview.hidden = true;
     currentPreview = null;
     setStatus(`Fill attempt completed on ${response.origin}. Check each result below.`);
-  } catch (error) { setStatus(error?.message || "The approved fill could not be completed."); }
-  finally { setBusy(false); }
+  } catch (error) { setStatus(error?.message || "The approved fill could not be completed."); } finally { setBusy(false); }
 }
 
 async function cancelPreview() {
@@ -68,8 +68,7 @@ async function cancelPreview() {
     preview.hidden = true;
     rows.replaceChildren();
     setStatus("Preview cancelled and pending data cleared.");
-  } catch (error) { setStatus(error?.message || "Could not cancel this preview."); }
-  finally { setBusy(false); }
+  } catch (error) { setStatus(error?.message || "Could not cancel this preview."); } finally { setBusy(false); }
 }
 
 function renderPreview(data) {
@@ -78,7 +77,13 @@ function renderPreview(data) {
   const source = data.profile.source === "pod16" ? "POD-16 approved facts" : "fictional development data";
   document.querySelector("#profile").textContent = `${data.profile.name} (version ${data.profile.version}; ${source})`;
   document.querySelector("#expiry").textContent = `This preview expires ${new Date(data.expiresAt).toLocaleTimeString()}.`;
-  document.querySelector("#summary").textContent = `${data.counts.eligible} eligible of ${data.counts.total} visible controls. Nothing is written until you approve. ${data.notices.join(" ")}`;
+  const timings = data.timings || {};
+  const timingText = [
+    Number.isFinite(timings.pageScanAndMatchMs) ? `Page scan + local matching: ${timings.pageScanAndMatchMs} ms.` : "",
+    Number.isFinite(timings.profileApiMs) ? `POD-16 profile request: ${timings.profileApiMs} ms.` : ""
+  ].filter(Boolean).join(" ");
+  document.querySelector("#summary").textContent = `${data.counts.eligible} eligible of ${data.counts.total} visible controls. Nothing is written until you approve. ${timingText} ${data.notices.join(" ")}`;
+  document.querySelector("#empty-fields").hidden = data.rows.length > 0;
   rows.replaceChildren(...data.rows.map((row) => createRow(row, data.profile)));
   preview.hidden = false;
   document.querySelector("#approve").disabled = Boolean(data.filling);

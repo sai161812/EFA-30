@@ -55,7 +55,8 @@
     </section>
     <section aria-labelledby="offline-heading">
       <h2 id="offline-heading">Offline development data</h2>
-      <p class="notice"><strong>Development data:</strong> when no API origin is configured, scans use the fictional Professional Demo profile. Configuring POD-16 disables this data completely, including when the API is unavailable.</p>
+      <p class="notice"><strong>Development data:</strong> the fictional Professional Demo profile is never selected automatically. Enable it explicitly for local testing when POD-16 is not configured.</p>
+      <label class="check-row"><input id="development-profile-enabled" type="checkbox"> Use the fictional development profile for local testing</label>
     </section>
   </main>
   <script type="module" src="settings.js"></script>

@@ -1,8 +1,9 @@
-{
+﻿{
   "name": "pluma-autofill-extension",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "evaluate": "node evaluation/evaluate.mjs"
   }
 }

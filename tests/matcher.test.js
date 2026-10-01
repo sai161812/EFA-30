@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { matchField, formatAddress, formatDateForField, MATCH_STATUS } from "../extension/matching/matcher.js";
+import { matchField, formatAddress, formatDateForField, formatSelectedFact, MATCH_STATUS } from "../extension/matching/matcher.js";
 import { DEVELOPMENT_PROFILE } from "../extension/development/profile.js";
 
 function field(overrides = {}) {
@@ -72,6 +72,13 @@ test("year-only facts never create a full date or month/day", () => {
   assert.match(matchField(field({ inputType: "date", label: "Expected graduation date" }), facts).reason, /month and day will not be invented/);
   assert.deepEqual(formatDateForField({ value: "2027", date_precision: "year" }, "date").status, MATCH_STATUS.MISSING_VALUE);
   assert.equal(formatDateForField({ value: "2027-05-20", date_precision: "day" }, "date").value, "2027-05-20");
+});
+test("URL controls accept URL facts and block incompatible fact types", () => {
+  const urlField = field({ inputType: "url", label: "GitHub URL", name: "github_url" });
+  assert.equal(matchField(urlField, facts).profileKey, "github");
+  const incompatible = [{ key: "github", label: "GitHub", aliases: ["github"], type: "text", value: "someone", source: "approved" }];
+  assert.equal(matchField(urlField, incompatible).status, MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(formatSelectedFact(urlField, facts.find((fact) => fact.key === "email")).status, MATCH_STATUS.NEEDS_CHOICE, "saved/manual mappings revalidate fact type");
 });
 test("oversized descriptions are never silently shortened", () => {
   const longFact = { key: "about", label: "About", value: "x".repeat(80), aliases: ["about"], source: "approved", type: "text" };

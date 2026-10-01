@@ -64,7 +64,7 @@
     const context = getContext(element);
     const visible = isVisible(element);
     const unsupportedReason = exclusionReason(element, inputType, autocomplete, [label, ...ariaLabels, ...instructions, context].join(" ")) || (!visible ? "This field is no longer visible." : "");
-    const eligible = visible && !unsupportedReason && !isDisabled(element) && !element.readOnly && ["text", "email", "tel", "textarea", "date", "select-one"].includes(inputType);
+    const eligible = visible && !unsupportedReason && !isDisabled(element) && !element.readOnly && ["text", "email", "tel", "url", "textarea", "date", "select-one"].includes(inputType);
     return {
       id,
       kind: element.tagName.toLowerCase(),
@@ -178,7 +178,7 @@
     if (tokens.some((token) => token.startsWith("cc-")) || ["current-password", "new-password"].some((token) => tokens.includes(token)) ||
       /\b(password|passcode|pin|cvv|cvc|card number|credit card|bank account|account number|routing number|ssn|social security|passport|driver s license|national id|government id|tax id|identity number|signature|consent|agree|accept terms)\b/.test(riskText)) return "Sensitive identity, payment, signature or consent fields are never filled.";
     if (isDisabled(element) || element.readOnly) return "Disabled or read-only controls are not editable.";
-    if (!["text", "email", "tel", "textarea", "date", "select-one"].includes(type)) return type === "select-multiple" ? "Multi-select controls are unsupported." : "Only text, email, telephone, date and single-select controls are supported.";
+    if (!["text", "email", "tel", "url", "textarea", "date", "select-one"].includes(type)) return type === "select-multiple" ? "Multi-select controls are unsupported." : "Only text, email, telephone, URL, date and single-select controls are supported.";
     return "";
   }
 

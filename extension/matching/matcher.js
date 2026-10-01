@@ -52,6 +52,7 @@ export function matchField(field, facts) {
   }
   const fact = facts.find((item) => item.key === candidates[0]);
   if (!fact?.value) return proposal(fact?.key || null, MATCH_STATUS.MISSING_VALUE, `Matched ${fact?.label || candidates[0]}, but this profile has no approved value for it.`);
+  if (!factFitsInputType(field, fact)) return proposal(fact.key, MATCH_STATUS.NEEDS_CHOICE, "The profile fact type is incompatible with this control type.");
   if (field.kind === "select") return matchSelect(field, fact, evidence.get(fact.key));
   if (fact.value.length > (Number.isInteger(field.maxLength) && field.maxLength >= 0 ? field.maxLength : 4000)) return proposal(fact.key, MATCH_STATUS.NEEDS_CHOICE, `The stored ${fact.label} exceeds this field’s ${field.maxLength}-character limit. Nothing will be truncated.`);
   return proposal(fact.key, MATCH_STATUS.MATCHED, `Matches ${fact.label}: ${[...new Set(evidence.get(fact.key))].join("; ")}.`);
@@ -76,6 +77,7 @@ export function formatDateForField(fact, inputType) {
 export function formatSelectedFact(field, fact) {
   if (!field?.eligible) return proposal(null, MATCH_STATUS.UNSUPPORTED, field?.unsupportedReason || "This control is not supported.");
   if (!fact?.value) return proposal(fact?.key || null, MATCH_STATUS.MISSING_VALUE, "The selected approved fact has no value.");
+  if (!factFitsInputType(field, fact)) return proposal(fact.key, MATCH_STATUS.NEEDS_CHOICE, "This approved fact type is incompatible with the control type.");
   const text = fieldText(field);
   const category = classifyCategory(text);
   const scoped = classifyScope(text);
@@ -204,7 +206,14 @@ function factFitsContext(fact, category, scope) {
   return true;
 }
 function isAnswerPrompt(text) { return /\b(motivation|eligibility|opinion|why (?:do you|are you|would you)|tell us why|why should)\b/i.test(text); }
-function isSupportedKind(field) { return ["text", "email", "tel", "textarea", "date", "select-one"].includes(field.inputType) || (field.kind === "select" && !field.multiple); }
+function factFitsInputType(field, fact) {
+  if (field.inputType === "email") return fact.type === "email";
+  if (field.inputType === "tel") return fact.type === "tel" || fact.type === "phone";
+  if (field.inputType === "url") return fact.type === "url";
+  if (field.inputType === "date") return fact.type === "date";
+  return true;
+}
+function isSupportedKind(field) { return ["text", "email", "tel", "url", "textarea", "date", "select-one"].includes(field.inputType) || (field.kind === "select" && !field.multiple); }
 function addressScope(fact) { const text = `${fact.key} ${fact.label} ${(fact.aliases || []).join(" ")}`; return classifyScope(text).scope; }
 function addressPart(fact) { const text = `${fact.key} ${fact.label}`.toLowerCase(); if (/line.?1|street|address line/.test(text)) return "line1"; if (/line.?2|apt|suite/.test(text)) return "line2"; if (/locality|district|suburb/.test(text)) return "locality"; if (/postal|zip/.test(text)) return "postal"; if (/city|town/.test(text)) return "city"; if (/state|region|province/.test(text)) return "region"; if (/country/.test(text)) return "country"; return ""; }
 function addEvidence(evidence, key, reason) { if (!evidence.has(key)) evidence.set(key, []); evidence.get(key).push(reason); }

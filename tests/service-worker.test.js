@@ -5,7 +5,7 @@ const popupSender = { id: "extension-test", url: "chrome-extension://extension-t
 const settingsSender = { id: "extension-test", url: "chrome-extension://extension-test/extension/settings.html" };
 
 function makeRuntime() {
-  const stored = {};
+  const stored = { "local:developmentProfileEnabled": true };
   const calls = { query: 0, inject: 0, fills: 0, lastFillTarget: null };
   let activeTab = { id: 7, url: "http://localhost:8000/" };
   let documentAvailable = true;
@@ -73,6 +73,10 @@ test("preview is session-persisted, unapproved by default, document-bound and ex
   assert.ok(runtime.stored.pendingPreview.expiresAt > Date.now());
   const restored = await send(runtime, { type: "pluma/get-preview" });
   assert.equal(restored.pending, true, "popup closure or worker suspension leaves the preview in session storage");
+
+  await loadWorker(runtime, "session-worker-restart");
+  const afterRestart = await send(runtime, { type: "pluma/get-preview" });
+  assert.equal(afterRestart.pending, true, "a restarted service worker restores the pending preview from session storage");
 
   const unapproved = await send(runtime, { type: "pluma/approve-and-fill" });
   assert.equal(unapproved.type, "pluma/workflow-error");
@@ -344,4 +348,20 @@ test("remembered mappings are scoped suggestions, store no values, and reject st
   assert.equal((await send(runtime, { type: "pluma/memory-list" }, settings)).rules.length, 0);
   await send(runtime, { type: "pluma/memory-clear" }, settings);
   assert.equal((await send(runtime, { type: "pluma/memory-list" }, settings)).rules.length, 0);
+});
+
+test("development profile requires an explicit Settings choice", async () => {
+  const runtime = makeRuntime();
+  runtime.stored["local:developmentProfileEnabled"] = false;
+  await loadWorker(runtime, "explicit-development-profile");
+  const denied = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(denied.type, "pluma/workflow-error");
+  assert.match(denied.error, /explicitly enable the fictional development profile/);
+  assert.equal(runtime.calls.inject, 0);
+
+  const enabled = await send(runtime, { type: "pluma/dev-profile-set", enabled: true }, settingsSender);
+  assert.equal(enabled.enabled, true);
+  const scan = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(scan.profile.source, "development");
+  assert.equal(scan.pending, true);
 });

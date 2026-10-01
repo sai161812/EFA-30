@@ -16,7 +16,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !Object.values(MESSAGE).includes(message.type) || message.type === MESSAGE.SCAN_PAGE || message.type === MESSAGE.FILL_APPROVED) return false;
   const apiMessage = [MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
     MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE,
-    MESSAGE.MEMORY_LIST, MESSAGE.MEMORY_EDIT, MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_CLEAR].includes(message.type);
+    MESSAGE.MEMORY_LIST, MESSAGE.MEMORY_EDIT, MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_CLEAR, MESSAGE.DEV_PROFILE_SET].includes(message.type);
   if (apiMessage ? !isTrustedSettings(sender) : !isTrustedPopup(sender)) {
     sendResponse({ type: MESSAGE.WORKFLOW_ERROR, error: "This extension action came from an untrusted page." });
     return false;
@@ -41,13 +41,23 @@ async function dispatchProfileApi(message) {
   const settings = local[API_SETTINGS_KEY] || { origin: "", selectedProfileId: "" };
   const session = await chrome.storage.session.get(API_TOKEN_KEY);
   const token = session[API_TOKEN_KEY];
-  if (message.type === MESSAGE.API_STATUS) return { type: MESSAGE.API_STATUS, origin: settings.origin, selectedProfileId: settings.selectedProfileId, authenticated: Boolean(token) };
+  if (message.type === MESSAGE.API_STATUS) {
+    const dev = await chrome.storage.local.get("developmentProfileEnabled");
+    return { type: MESSAGE.API_STATUS, origin: settings.origin, selectedProfileId: settings.selectedProfileId, authenticated: Boolean(token), developmentProfileEnabled: dev.developmentProfileEnabled === true };
+  }
+  if (message.type === MESSAGE.DEV_PROFILE_SET) {
+    if (typeof message.enabled !== "boolean") throw new Error("Choose whether to enable the fictional development profile.");
+    if (settings.origin && message.enabled) throw new Error("The development profile is unavailable while POD-16 is configured.");
+    await chrome.storage.local.set({ developmentProfileEnabled: message.enabled });
+    await clearPending();
+    return { type: MESSAGE.DEV_PROFILE_SET, enabled: message.enabled };
+  }
   if (message.type === MESSAGE.API_CONFIGURE) {
     const origin = normalizeApiOrigin(message.origin);
     const permission = await chrome.permissions.contains({ origins: [`${origin}/*`] });
     if (!permission) throw new Error("This API origin is not included in this extension build. Add its exact origin permission and reload the extension.");
     if (settings.origin && settings.origin !== origin) await chrome.storage.session.remove([API_TOKEN_KEY, SESSION_KEY]);
-    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" } });
+    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" }, developmentProfileEnabled: false });
     return { type: MESSAGE.API_CONFIGURE, origin };
   }
   if (message.type === MESSAGE.API_SELECT_PROFILE) {
@@ -101,6 +111,7 @@ async function dispatchProfileApi(message) {
 function validateSettingsMessage(message) {
   const allowed = {
     [MESSAGE.API_STATUS]: ["type"],
+    [MESSAGE.DEV_PROFILE_SET]: ["type", "enabled"],
     [MESSAGE.API_LOGOUT]: ["type"],
     [MESSAGE.API_LIST_PROFILES]: ["type"],
     [MESSAGE.API_CONFIGURE]: ["type", "origin"],
@@ -145,13 +156,18 @@ function validProfileId(value) {
 async function getSelectedProfile() {
   const local = await chrome.storage.local.get(API_SETTINGS_KEY);
   const settings = local[API_SETTINGS_KEY];
-  if (!settings?.origin) return { ...DEVELOPMENT_PROFILE, profileSource: "development" };
+  if (!settings?.origin) {
+    const dev = await chrome.storage.local.get("developmentProfileEnabled");
+    if (dev.developmentProfileEnabled !== true) throw new Error("Select a profile in Settings before scanning. For offline testing, explicitly enable the fictional development profile.");
+    return { ...DEVELOPMENT_PROFILE, profileSource: "development" };
+  }
   const session = await chrome.storage.session.get(API_TOKEN_KEY);
   if (!session[API_TOKEN_KEY]) throw new Error("POD-16 requires sign-in after browser restart. Open Settings and authenticate again.");
   if (!settings.selectedProfileId) throw new Error("Select a POD-16 profile in Settings before scanning.");
   try {
+    const apiStartedAt = performance.now();
     const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token: session[API_TOKEN_KEY], path: `/${validProfileId(settings.selectedProfileId)}` }));
-    return { ...profile, profileSource: "pod16" };
+    return { ...profile, profileSource: "pod16", profileApiMs: Math.round((performance.now() - apiStartedAt) * 100) / 100 };
   } catch (error) {
     await clearPending();
     if (/session expired|key was rejected/i.test(String(error?.message))) await chrome.storage.session.remove(API_TOKEN_KEY);
@@ -295,7 +311,7 @@ async function hasStaleRule(rules, { origin, profile, formFingerprint, field, fa
 async function dispatch(message) {
   await sessionReady;
   if ([MESSAGE.API_STATUS, MESSAGE.API_CONFIGURE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT,
-    MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE].includes(message.type)) return dispatchProfileApi(message);
+    MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE, MESSAGE.DEV_PROFILE_SET].includes(message.type)) return dispatchProfileApi(message);
   if ([MESSAGE.MEMORY_LIST, MESSAGE.MEMORY_EDIT, MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_CLEAR].includes(message.type)) return dispatchMemory(message);
   if (message.type === MESSAGE.SCAN_ACTIVE_TAB) return scanActiveTab();
   if (message.type === MESSAGE.GET_PREVIEW) return previewResponse(await loadPending());
@@ -313,6 +329,7 @@ async function scanActiveTab() {
   if (!tab?.id || !tab.url) throw new Error("No active page is available to scan.");
   if (!/^https?:\/\//i.test(tab.url)) throw new Error("This browser page is restricted. Open a regular HTTP or HTTPS page.");
   const profile = await getSelectedProfile();
+  const scanStartedAt = performance.now();
   const injected = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: false }, files: ["extension/content/content-script.js"] });
   const topDocument = injected.find((item) => item.frameId === 0);
   if (!topDocument?.documentId) throw new Error("The page document could not be identified. Refresh and try again.");
@@ -341,6 +358,8 @@ async function scanActiveTab() {
         rememberMapping: false, valueOverride: null, include: false, overwrite: false };
     }))
   };
+  pending.scanAndMatchMs = Math.round((performance.now() - scanStartedAt) * 100) / 100;
+  pending.profileApiMs = profile.profileApiMs ?? null;
   await savePending(pending);
   return previewResponse(pending);
 }
@@ -406,6 +425,7 @@ function previewResponse(pending) {
     factOptions: pending.facts.map(({ key, label, type, source }) => ({ key, label, type, source })),
     notices: pending.notices || [],
     expiresAt: pending.expiresAt, filling: Boolean(pending.filling),
+    timings: { pageScanAndMatchMs: pending.scanAndMatchMs ?? null, profileApiMs: pending.profileApiMs ?? null },
     rows: pending.rows.map((row) => previewRow(row, pending.fields.find((field) => field.id === row.fieldId), pending.facts)),
     counts: { total: pending.fields.length, eligible: pending.fields.filter((field) => field.eligible).length }
   };

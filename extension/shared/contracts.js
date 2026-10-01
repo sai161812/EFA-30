@@ -21,7 +21,8 @@ export const MESSAGE = Object.freeze({
   MEMORY_LIST: "pluma/memory-list",
   MEMORY_EDIT: "pluma/memory-edit",
   MEMORY_DELETE: "pluma/memory-delete",
-  MEMORY_CLEAR: "pluma/memory-clear"
+  MEMORY_CLEAR: "pluma/memory-clear",
+  DEV_PROFILE_SET: "pluma/dev-profile-set"
 });
 
 /**

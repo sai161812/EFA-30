@@ -230,3 +230,16 @@ test("scan carries bounded ancestor group context and accessible instructions", 
   assert.match(scan.fields[0].context, /Education details.*Student contact/);
   assert.equal(Array.from(scan.fields[0].instructions).join(" | "), "Use the address from your college account");
 });
+
+test("a newly inserted dynamic form field appears in a fresh scan", async () => {
+  const liveControls = [new FakeInput({ type: "email", name: "email", label: "Email" })];
+  const harness = await contentHarness(liveControls);
+  const initial = await harness.request({ type: "pluma/scan-page" });
+  assert.equal(initial.fields.length, 1);
+
+  liveControls.push(new FakeInput({ type: "text", name: "current_city", label: "Current city" }));
+  const updated = await harness.request({ type: "pluma/scan-page" });
+  assert.equal(updated.fields.length, 2);
+  assert.equal(updated.fields[1].label, "Current city");
+  assert.equal(updated.fields[1].eligible, true);
+});
