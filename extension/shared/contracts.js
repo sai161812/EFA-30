@@ -59,3 +59,10 @@ export function isObject(value) {
 export function isMessageType(value, expectedType) {
   return isObject(value) && value.type === expectedType;
 }
+
+
+// Storage and browser messaging may reorder object keys; arrays retain meaningful order.
+export function stableSerialize(value) {
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+}

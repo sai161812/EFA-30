@@ -1,4 +1,4 @@
-import { isMessageType, isObject, MESSAGE } from "./shared/contracts.js";
+import { isMessageType, isObject, MESSAGE, stableSerialize } from "./shared/contracts.js";
 import { matchField, formatSelectedFact, MATCH_STATUS } from "./matching/matcher.js";
 import { DEVELOPMENT_PROFILE } from "./development/profile.js";
 import { normalizeApiOrigin, requestProfileApi, validateProfile, validateProfileSummaryList } from "./profile-api.js";
@@ -610,7 +610,7 @@ async function performApprovedFill(pending) {
   await assertCurrentPreview(pending);
   if (current.id !== pending.profileId || current.profileSource !== pending.profileSource ||
       (current.profileOrigin ?? null) !== pending.profileOrigin || current.version !== pending.profileVersion ||
-      JSON.stringify(current.facts) !== JSON.stringify(pending.facts)) {
+      stableSerialize(current.facts) !== stableSerialize(pending.facts)) {
     await clearPending(pending.token);
     throw new Error("The profile changed after preview. Scan again to review current facts.");
   }

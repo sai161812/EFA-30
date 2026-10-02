@@ -609,3 +609,15 @@ test("excluding an automatic match survives restoration and prevents filling", a
   assert.equal((await send(runtime, { type: "pluma/approve-and-fill" })).type, "pluma/workflow-error");
   assert.equal(runtime.calls.fills, 0);
 });
+
+
+test("Chrome storage key reordering does not invalidate an unchanged profile", async () => {
+  const runtime = makeRuntime();
+  await loadWorker(runtime, "storage-key-order");
+  await send(runtime, {type: "pluma/scan-active-tab"});
+  const pending = runtime.stored.pendingPreview;
+  pending.facts = pending.facts.map(fact => Object.fromEntries(Object.entries(fact).sort(([a], [b]) => a.localeCompare(b))));
+  const result = await send(runtime, {type: "pluma/approve-and-fill"});
+  assert.equal(result.type, "pluma/fill-result");
+  assert.equal(runtime.calls.fills, 1);
+});

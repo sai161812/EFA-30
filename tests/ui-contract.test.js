@@ -95,3 +95,30 @@ test("failed saves keep the editor available for retry", async () => {
   assert.equal(vm.runInContext('savingProfile', ctx), false);
   assert.equal(vm.runInContext('document.querySelector("#save-profile").disabled', ctx), false);
 });
+
+
+test("fill gives immediate progress feedback and rejects duplicate clicks", async () => {
+  let finish;
+  const messages = [];
+  const ctx = harness("popup.js", message => {
+    messages.push(message);
+    return new Promise(resolve => { finish = resolve; });
+  });
+  vm.runInContext('currentPreview = {previewToken:"progress",previewRevision:0,rows:[{include:true,field:{eligible:true},status:"matched"}]};',ctx);
+  const filling = vm.runInContext('approve()',ctx);
+  await new Promise(resolve => setTimeout(resolve,0));
+  assert.equal(vm.runInContext('document.querySelector("#approve").textContent',ctx),"Filling...");
+  assert.equal(vm.runInContext('document.querySelector("#approve").disabled',ctx),true);
+  await vm.runInContext('approve()',ctx);
+  assert.equal(messages.length,1);
+  finish({type:MESSAGE.WORKFLOW_ERROR,error:"The page changed. Scan again."});
+  await filling;
+  assert.equal(vm.runInContext('document.querySelector("#status").textContent',ctx),"The page changed. Scan again.");
+  assert.equal(vm.runInContext('isBusy',ctx),false);
+});
+
+test("confirmation is disabled when no fields are ready", () => {
+  const ctx = harness("popup.js",async()=>({}));
+  vm.runInContext('currentPreview={rows:[{include:false}]}; setBusy(false);',ctx);
+  assert.equal(vm.runInContext('document.querySelector("#approve").disabled',ctx),true);
+});

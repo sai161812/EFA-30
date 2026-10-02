@@ -54,7 +54,7 @@ class FakeTextarea extends FakeInput {
   constructor(options = {}) { super({ ...options, tagName: "TEXTAREA" }); }
 }
 
-async function contentHarness(fields, references = {}) {
+async function contentHarness(fields, references = {}, overrides = {}) {
   const runtimeListeners = [];
   const documentListeners = {};
   let lastFields = [];
@@ -70,9 +70,12 @@ async function contentHarness(fields, references = {}) {
     HTMLTextAreaElement: FakeTextarea,
     HTMLSelectElement: FakeSelect,
     getComputedStyle(element) { return { visibility: element.visible !== false ? "visible" : "hidden", display: element.visible !== false ? "block" : "none", opacity: element.opacity || "1" }; },
+    setTimeout, clearTimeout,
     requestAnimationFrame(callback) { callback(); },
+    cancelAnimationFrame() {},
     Event: class { constructor(type) { this.type = type; } }
   };
+  Object.assign(context, overrides);
   context.globalThis = context;
   const source = fs.readFileSync(new URL("../extension/content/content-script.js", import.meta.url), "utf8");
   vm.runInNewContext(source, context);
@@ -312,4 +315,38 @@ test("transparent or inert ancestors exclude controls from disclosure", async ()
   assert.equal(scan.fields.length,0);
   input.parentElement.opacity="1"; input.parentElement.inert=true;
   const inert=await harness.request({type:"pluma/scan-page"}); assert.equal(inert.fields.length,0);
+});
+
+
+test("fill completes when animation frames are suspended", async () => {
+  const field = new FakeInput({ name: "email", type: "email", label: "Email" });
+  const harness = await contentHarness([field], {}, { requestAnimationFrame() { return 1; } });
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  const result = await Promise.race([
+    harness.request({ type: "pluma/fill-approved", items: [{fieldId: scan.fields[0].id, value: "ready@example.test", overwrite: false, expected: scan.fields[0]}] }),
+    new Promise(resolve => setTimeout(() => resolve({timeout: true}), 800))
+  ]);
+  assert.equal(result.timeout, undefined, "Filling must not depend on animation frames being delivered");
+  assert.equal(result.outcomes[0].status, "filled");
+});
+
+test("focus handlers run before the native write and cannot silently erase it", async () => {
+  const field = new FakeInput({ name: "email", type: "email", label: "Email" });
+  field.focus = () => { field.value = ""; };
+  const harness = await contentHarness([field]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  const result = await harness.request({ type: "pluma/fill-approved", items: [{fieldId: scan.fields[0].id, value: "ready@example.test", overwrite: false, expected: scan.fields[0]}] });
+  assert.equal(result.outcomes[0].status, "filled");
+  assert.equal(field.value, "ready@example.test");
+});
+
+
+test("browser storage property ordering does not change form semantics", async () => {
+  const field = new FakeInput({name: "email", type: "email", label: "Email"});
+  field.form = {id: "registration", children: [], getAttribute(name) {return {name:"signup",action:"/submit",method:"post"}[name] || "";}};
+  const harness = await contentHarness([field]);
+  const scan = await harness.request({type: "pluma/scan-page"});
+  const expected = {...scan.fields[0], formIdentity: {method:"post",action:"/submit",name:"signup",id:"registration"}};
+  const result = await harness.request({type: "pluma/fill-approved", expectedFields:[expected], items:[{fieldId:expected.id,value:"ready@example.test",overwrite:false,expected}]});
+  assert.equal(result.outcomes[0].status, "filled");
 });

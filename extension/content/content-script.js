@@ -258,12 +258,18 @@
         continue;
       }
       try {
+        element.focus({ preventScroll: true });
+        // Focus handlers may change the control; revalidate before writing.
+        const focused = describeField(element);
+        if (!element.isConnected || !sameSemantics(item.expected, focused)) {
+          outcomes.push(outcome(item.fieldId, "skipped", "The field changed on focus. Scan and review again."));
+          continue;
+        }
         setNativeValue(element, item.value);
         element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         element.dispatchEvent(new Event("change", { bubbles: true }));
-        element.focus({ preventScroll: true });
         element.blur();
-        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+        await waitForPageUpdates();
         if (element.isConnected && element.value === item.value && element.validity?.valid !== false) { state.valueSnapshots.set(element, String(element.value)); outcomes.push(outcome(item.fieldId, "filled", "Value retained after blur and passed native validation at verification time.")); }
         else outcomes.push(outcome(item.fieldId, "failed", "The page did not retain this value after input events."));
       } catch (_error) {
@@ -271,7 +277,7 @@
       }
     }
     // Recheck earlier writes after later field handlers have run.
-    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    await waitForPageUpdates();
     return outcomes.map((result) => {
       if (result.status !== "filled") return result;
       const item = items.find((candidate) => candidate.fieldId === result.fieldId);
@@ -288,7 +294,29 @@
   }
   function sameSemantics(expected, current) {
     const keys = ["id", "kind", "label", "ariaLabels", "instructions", "autocomplete", "name", "domId", "placeholder", "context", "inputType", "formIdentity", "options", "multiple", "maxLength", "visible", "hasValue", "eligible", "revision"];
-    return keys.every((key) => JSON.stringify(expected[key]) === JSON.stringify(current[key]));
+    return keys.every((key) => stableSerialize(expected[key]) === stableSerialize(current[key]));
+  }
+
+  function stableSerialize(value) {
+    return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+  }
+
+  function waitForPageUpdates() {
+    return new Promise((resolve) => {
+      let settled = false;
+      let frame;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (frame !== undefined) cancelAnimationFrame(frame);
+        resolve();
+      };
+      // Hidden tabs can suspend animation frames indefinitely.
+      const timer = setTimeout(finish, 100);
+      frame = requestAnimationFrame(finish);
+    });
   }
 
   function setNativeValue(element, value) {

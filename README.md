@@ -93,3 +93,12 @@ See [evaluation/AUDIT.md](evaluation/AUDIT.md) for F1?F7 evidence and blockers, 
 F7's native PLUMA bridge is missing. Chrome/Edge verification, live POD-16 behavior, the required independent corpus and fresh held-out families, real saved-correction outcomes, observed fill reliability and human completion-time results remain incomplete. This is not a release sign-off.
 
 After updating, reload the unpacked extension. The `alarms` permission supports pending-preview cleanup; expiry is also checked before use. Version-one correction rules remain inspectable but are retired from reuse: review a new correction and explicitly remember it again. Version-two rules show control/key/site/profile identifiers and fingerprints rather than retaining raw page labels.
+
+
+## Autofill reliability regression checks
+
+Run `npm ci`, then `npm test`. To verify real browser storage and DOM writes, run `npm run test:browser` with Microsoft Edge installed. On other systems, set `EFA_BROWSER_PATH` to a Chromium executable that supports loading unpacked extensions.
+
+The browser check uses an isolated temporary extension copy and synthetic local facts. It tests the popup confirmation handler, service-worker approval, storage round trips, native input/select/date/textarea values, input/change events, controlled email state, and preservation of existing values. The temporary copy grants loopback access and permits the popup to run in a browser tab for automation; production permissions and message checks stay unchanged. This check does not exercise the toolbar popup lifecycle or arbitrary third-party websites.
+
+Profile and field comparisons ignore object property order because browser storage may reorder keys. Actual fact changes still invalidate a preview. Focus runs before the native setter and revalidates the target; verification has a timer fallback so suspended animation frames cannot leave filling waiting indefinitely. The confirmation button shows progress and prevents duplicate clicks.

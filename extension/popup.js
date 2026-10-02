@@ -43,7 +43,10 @@ async function scan() {
 }
 
 async function approve() {
+  if (isBusy || !currentPreview) return;
   setBusy(true);
+  document.querySelector("#approve").textContent = "Filling...";
+  setStatus("Filling your confirmed details. Please wait...");
   try {
     await flushValueUpdates();
     const response = await chrome.runtime.sendMessage({ type: MESSAGE.APPROVE_AND_FILL, ...previewVersion() });
@@ -57,7 +60,7 @@ async function approve() {
     preview.hidden = true;
     currentPreview = null;
     setStatus(`Fill attempt completed on ${response.origin}. Check each result below.`);
-  } catch (error) { setStatus(error?.message || "The approved fill could not be completed."); } finally { setBusy(false); }
+  } catch (error) { setStatus(error?.message || "The approved fill could not be completed."); } finally { updateSelectionSummary(); setBusy(false); }
 }
 
 async function cancelPreview() {
@@ -92,7 +95,7 @@ function renderPreview(data) {
   document.querySelector("#empty-fields").hidden = data.counts.eligible > 0;
   rows.replaceChildren(...data.rows.map((row) => createRow(row, data.profile)));
   preview.hidden = false;
-  document.querySelector("#approve").disabled = Boolean(data.filling);
+  document.querySelector("#approve").disabled = isBusy || Boolean(data.filling) || !data.rows.some(row => row.include);
   setStatus(data.filling ? "A fill is already processing for this preview." : `Reviewing ${data.target.origin}.`);
 }
 
@@ -326,7 +329,7 @@ function updateSelectionSummary() {
 function setBusy(value) {
   isBusy = value;
   document.querySelector("#scan").disabled = value;
-  document.querySelector("#approve").disabled = value || Boolean(currentPreview?.filling);
+  document.querySelector("#approve").disabled = value || Boolean(currentPreview?.filling) || !currentPreview?.rows.some(row => row.include);
   document.querySelector("#cancel").disabled = value;
   rows.querySelectorAll("input, select, textarea").forEach((control) => {
     control.disabled = value || control.closest(".field-card")?.dataset.eligible !== "true" || Boolean(currentPreview?.filling) || control.dataset.directAnswer === "true";
