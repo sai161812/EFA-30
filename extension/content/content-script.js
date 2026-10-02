@@ -184,7 +184,7 @@
     if (["submit", "button", "reset", "image"].includes(type)) return "Action controls are unsupported.";
     if (tokens.includes("one-time-code") || /\b(otp|one time code|verification code|authentication code|security code)\b/.test(riskText)) return "One-time-code fields are never filled.";
     if (tokens.some((token) => token.startsWith("cc-")) || ["current-password", "new-password"].some((token) => tokens.includes(token)) ||
-      /\b(password|passcode|pin|cvv|cvc|card number|credit card|bank account|account number|routing number|ssn|social security|passport|driver s license|national id|government id|tax id|identity number|signature|consent|agree|accept terms)\b/.test(riskText)) return "Sensitive identity, payment, signature or consent fields are never filled.";
+      /\b(password|passphrase|passcode|pin|api key|access token|refresh token|secret key|private key|cvv|cvc|card number|credit card|bank account|account number|routing number|ssn|social security|passport|driver s license|national id|aadhaar|government id|tax id|identity number|signature|consent|agree|accept terms)\b/.test(riskText)) return "Sensitive identity, payment, signature or consent fields are never filled.";
     if (isDisabled(element) || element.readOnly) return "Disabled or read-only controls are not editable.";
     if (!["text", "email", "tel", "url", "textarea", "date", "select-one"].includes(type)) return type === "select-multiple" ? "Multi-select controls are unsupported." : "Only text, email, telephone, URL, date and single-select controls are supported.";
     return "";

@@ -1,3 +1,4 @@
+import { CONTACT_FIELDS, contactEditorFacts, removeEmptyContactFacts } from "./shared/contact-fields.js";
 import { MESSAGE, isMessageType } from "./shared/contracts.js";
 import { normalizeApiOrigin } from "./profile-api.js";
 
@@ -103,7 +104,7 @@ async function connect() {
     await refreshProfiles();
     status.textContent = "POD-16 profiles loaded. Select a profile and review its facts below.";
   } catch (error) { showError(error); }
-  finally { button.disabled = false; }
+  finally { document.querySelector("#api-key").value = ""; button.disabled = false; }
 }
 
 async function logout() {
@@ -166,12 +167,12 @@ async function loadEditor(profileId) {
     currentProfile = result.profile;
     document.querySelector("#editor-title").textContent = `${currentProfile.type} profile · version ${currentProfile.version}`;
     document.querySelector("#profile-name").value = currentProfile.name;
-    factList.replaceChildren(...currentProfile.facts.map((fact) => createFactRow(fact)));
+    factList.replaceChildren(...contactEditorFacts(currentProfile.facts).map((fact) => createFactRow(fact, true)));
     document.querySelector("#profile-editor").hidden = false;
   } catch (error) { showError(error); }
 }
 
-function createFactRow(fact = {}) {
+function createFactRow(fact = {}, guided = false) {
   const row = document.createElement("fieldset");
   row.className = "fact-row";
   const fields = [
@@ -218,6 +219,19 @@ function createFactRow(fact = {}) {
   remove.textContent = "Remove fact";
   remove.addEventListener("click", () => { editRevision += 1; row.remove(); });
   row.append(remove);
+  const contact = guided && CONTACT_FIELDS.find(field => field.key === fact.key);
+  if (contact) {
+    const value = row.querySelector('[data-key="value"]');
+    const valueLabel = value.parentElement;
+    valueLabel.firstChild.textContent = contact.label;
+    value.rows = 1;
+    const metadata = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Advanced mapping details";
+    metadata.append(summary, ...[...row.children].filter(child => child !== valueLabel));
+    row.replaceChildren(valueLabel, metadata);
+    row.classList.add("contact-row");
+  }
   return row;
 }
 
@@ -232,10 +246,10 @@ async function saveProfile() {
   const request = editorRequest;
   const savedId = currentProfile.id;
   try {
-    const facts = [...factList.querySelectorAll(".fact-row")].map((row) => {
+    const facts = removeEmptyContactFacts([...factList.querySelectorAll(".fact-row")].map((row) => {
       const value = (key) => { const text = row.querySelector(`[data-key="${key}"]`).value; return key === "value" ? text : text.trim(); };
       return { key: value("key"), label: value("label"), fact_type: value("fact_type"), value: value("value"), source: value("source"), aliases: value("aliases").split(",").map((item) => item.trim()).filter(Boolean), date_precision: value("date_precision") || null };
-    });
+    }));
     const result = await send(MESSAGE.API_UPDATE_PROFILE, { profileId: currentProfile.id, profile: { expected_version: currentProfile.version, name: document.querySelector("#profile-name").value.trim(), facts } });
     if (request !== editorRequest || currentProfile?.id !== savedId) { status.textContent = "The previous profile was saved. Review your current selection."; return; }
     currentProfile = result.profile;

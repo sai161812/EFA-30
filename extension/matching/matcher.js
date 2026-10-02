@@ -110,7 +110,16 @@ function isValidCalendarDate(value) { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(val
 export function proposal(profileKey, status, reason, extra = {}) { return { profileKey, status, reason, ...extra }; }
 
 function matchAddress(field, facts, scope) {
-  if (!scope) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "Specify whether this is a current or permanent address; address facts are never mixed across contexts.");
+  const parts = {"address-line1":"line1", "address-line2":"line2", "address-level2":"city", "address-level1":"region", "postal-code":"postal", "country":"country", "country-name":"country"};
+  const hints = [...new Set(String(field.autocomplete || "").toLowerCase().split(/\s+/).map(token => parts[token]).filter(Boolean))];
+  const describedPart = fieldAddressPart({...field, autocomplete:""});
+  if (hints.length > 1 || (hints.length === 1 && describedPart && hints[0] !== describedPart)) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "The address label and autocomplete identify different components. Choose a value explicitly.");
+  if (!scope) {
+    if (/\b(billing|shipping|business|work|office)\b/i.test(fieldText(field))) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "Choose the address for this specific purpose explicitly.");
+    const scopes = [...new Set(facts.filter(fact => fact.value && addressPart(fact)).map(addressScope).filter(Boolean))];
+    if (scopes.length !== 1) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, "Specify whether this is a current or permanent address; address facts are never mixed across contexts.");
+    scope = scopes[0];
+  }
   const part = fieldAddressPart(field);
   if (part) {
     const matches = facts.filter((fact) => addressScope(fact) === scope && addressPart(fact) === part && fact.value);
@@ -162,6 +171,10 @@ function contextualNameFacts(field, facts, category, scope) {
   return facts.filter((fact) => factFitsContext(fact, category, scope) && [fact.key, fact.label, ...(fact.aliases || [])].some((value) => pattern.test(normalizeAlias(value))));
 }
 function fieldAddressPart(field) {
+  const tokens = String(field.autocomplete || "").toLowerCase().split(/\s+/);
+  const parts = {"address-line1":"line1", "address-line2":"line2", "address-level2":"city", "address-level1":"region", "postal-code":"postal", "country":"country", "country-name":"country"};
+  const hints = [...new Set(tokens.map(token => parts[token]).filter(Boolean))];
+  if (hints.length === 1) return hints[0];
   const text = normalizeAlias([field.label, ...(field.ariaLabels || []), field.name, field.domId, field.placeholder].filter(Boolean).join(" "));
   if (/\b(postal code|zip code|postal|zip)\b/.test(text)) return "postal";
   if (/\b(city|town)\b/.test(text)) return "city";

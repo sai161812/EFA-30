@@ -1,4 +1,5 @@
-import { isMessageType, isObject, MESSAGE, stableSerialize } from "./shared/contracts.js";
+import { validateContactFacts } from "./shared/contact-fields.js";
+import { isMessageType, isObject, MESSAGE, stableSerialize, isSecureFormUrl, isSensitiveFact } from "./shared/contracts.js";
 import { matchField, formatSelectedFact, MATCH_STATUS } from "./matching/matcher.js";
 import { DEVELOPMENT_PROFILE } from "./development/profile.js";
 import { normalizeApiOrigin, requestProfileApi, validateProfile, validateProfileSummaryList } from "./profile-api.js";
@@ -205,8 +206,10 @@ function validateProfileWrite(profile, creating) {
         !(fact.date_precision === null || fact.date_precision === undefined || ["year", "month", "day"].includes(fact.date_precision))) {
       throw new Error("A profile fact edit was invalid.");
     }
+    if (isSensitiveFact(fact)) throw new Error("Do not save passwords, access keys, payment credentials or government identity numbers as autofill facts.");
     factKeys.add(fact.key);
   }
+  validateContactFacts(profile.facts);
 }
 
 function validProfileId(value) {
@@ -436,6 +439,7 @@ async function scanActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id || !tab.url) throw new Error("No active page is available to scan.");
   if (!/^https?:\/\//i.test(tab.url)) throw new Error("This browser page is restricted. Open a regular HTTP or HTTPS page.");
+  if (!isSecureFormUrl(tab.url)) throw new Error("Use an HTTPS website before sharing your details. HTTP is supported only for local development forms.");
   const profile = await getSelectedProfile();
   const scanStartedAt = performance.now();
   const injected = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: false }, files: ["extension/content/content-script.js"] });
@@ -606,6 +610,10 @@ async function approveAndFill(message) {
   finally { activeFillToken = null; }
 }
 async function performApprovedFill(pending) {
+  if (!isSecureFormUrl(pending.targetUrl)) {
+    await clearPending(pending.token);
+    throw new Error("Use an HTTPS website before filling your details. Scan the secure page again.");
+  }
   const current = await getSelectedProfile();
   await assertCurrentPreview(pending);
   if (current.id !== pending.profileId || current.profileSource !== pending.profileSource ||

@@ -100,3 +100,19 @@ test("formatted addresses and years obey control constraints and unique native o
   const address = formatAddress([{key:"currentAddressLine1",label:"Current address line 1",value:"First"},{key:"currentAddressLine2",label:"Current address line 2",value:"Second"}],"current");
   assert.equal(address.value,"First, Second");
 });
+
+
+test("generic contact address uses one available scope but never guesses between scopes or purposes", () => {
+  const single = facts.filter(fact => fact.key.startsWith("current"));
+  assert.equal(matchField(field({label:"Address line 1"}),single).profileKey,"currentAddressLine1");
+  assert.equal(matchField(field({label:"Address",autocomplete:"address-line1"}),single).profileKey,"currentAddressLine1");
+  assert.equal(matchField(field({label:"Address line 1"}),facts).status,MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(matchField(field({label:"Billing address line 1"}),single).status,MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(matchField(field({label:"Shipping address line 1"}),single).status,MATCH_STATUS.NEEDS_CHOICE);
+});
+
+
+test("conflicting address autocomplete and labels need a choice", () => {
+  const single=facts.filter(fact => fact.key.startsWith("current"));
+  assert.equal(matchField(field({label:"Postal code",autocomplete:"address-line1"}),single).status,MATCH_STATUS.NEEDS_CHOICE);
+});

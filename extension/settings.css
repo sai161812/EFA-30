@@ -29,3 +29,8 @@ button:disabled { cursor: wait; opacity: .65; }
 .memory-rule p { overflow-wrap: anywhere; margin: 6px 0; }
 .memory-rule .actions { margin-bottom: 0; }
 @media (max-width: 560px) { main { width: calc(100% - 20px); margin: 10px auto; padding: 16px; } .fact-row { grid-template-columns: 1fr; } }
+
+.contact-row { display: block; }
+.contact-row textarea { min-height: 40px; }
+.contact-row details { margin-top: 6px; }
+.contact-row summary { color: #194e80; cursor: pointer; font-size: 13px; }

@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { CONTACT_FIELDS, contactEditorFacts, removeEmptyContactFacts } from "../extension/shared/contact-fields.js";
 import { MESSAGE, isMessageType } from "../extension/shared/contracts.js";
 
 class Element {
@@ -15,7 +16,7 @@ class Element {
 }
 function harness(file, sendMessage) {
   const elements = new Map();
-  const context = vm.createContext({ MESSAGE, isMessageType, console, setTimeout, clearTimeout, CSS: { escape: (value) => value },
+  const context = vm.createContext({ CONTACT_FIELDS, contactEditorFacts, removeEmptyContactFacts, MESSAGE, isMessageType, console, setTimeout, clearTimeout, CSS: { escape: (value) => value },
     chrome: { runtime: { sendMessage } }, Option: class extends Element { constructor(text, value) { super(); this.text = text; this.value = value; } },
     document: { querySelector(selector) { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); }, createTextNode(text) { return {textContent:text}; }, createElement(tag) { const element = new Element(); if (tag === "textarea") Object.defineProperty(element, "type", { get() { return "textarea"; } }); return element; } }
   });
@@ -121,4 +122,14 @@ test("confirmation is disabled when no fields are ready", () => {
   const ctx = harness("popup.js",async()=>({}));
   vm.runInContext('currentPreview={rows:[{include:false}]}; setBusy(false);',ctx);
   assert.equal(vm.runInContext('document.querySelector("#approve").disabled',ctx),true);
+});
+
+
+test("failed connection clears the API key input", async () => {
+  const ctx = harness("settings.js",async()=>({}));
+  ctx.normalizeApiOrigin = value => value;
+  vm.runInContext('document.querySelector("#api-key").value="synthetic-secret"; document.querySelector("#api-origin").value="https://example.test";',ctx);
+  // This harness has no permission API, reproducing a failure before login.
+  await vm.runInContext('connect()',ctx);
+  assert.equal(vm.runInContext('document.querySelector("#api-key").value',ctx),"");
 });

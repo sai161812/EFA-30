@@ -4,7 +4,7 @@ A standalone browser autofill extension. Save your own details locally, review s
 
 ## Start here
 
-Follow the [simple usage guide](usage_guide.md): **Open settings > Use local profiles > Create > Add facts > Save**. Then open a website form and click **Scan this page**.
+Follow the [simple usage guide](usage_guide.md): **Open settings > Use local profiles > Create > Enter contact details > Save**. Then open a website form and click **Scan this page**.
 
 Load this project folder directly; no ZIP or build step is required. If already installed, click **Reload** on the browser extensions page to show the updated name. Your stored profiles stay in place when reloading the same extension.
 
@@ -49,7 +49,7 @@ Stop the fixture server with `Ctrl+C`. If `py` is unavailable, run `python -m ht
 - API keys never enter local/sync storage, page messages or content scripts. The service worker has fixed profile-only routes; the content script cannot request profile data or approve a fill.
 - Profile data is re-read from POD-16 before scanning and revalidated by identity, backend, version and current facts immediately before filling. API outage, expired authentication or version change clears the preview and requires a fresh session/review.
 - The content script returns field descriptors and existing-value presence only. It receives selected values only in the final approved request for the recorded tab/document.
-- Hidden controls are not scanned. Password, OTP, payment/identity, signature, consent, upload, disabled and readonly controls are excluded. Existing values need explicit per-field overwrite approval.
+- Public forms must use HTTPS; loopback HTTP is supported for development. Hidden controls are not scanned. Password, access-key/token, OTP, payment/identity, signature, consent, upload, disabled and readonly controls are excluded. Existing values need explicit per-field overwrite approval.
 - `extension/matching/matcher.js` is pure and deterministic. It uses exact aliases and explicit semantic context, formats only complete stored dates, composes only known same-scope address parts, and leaves ambiguous fields unresolved. It does not fuzzy-match, split names, generate answers, infer missing facts or silently truncate values.
 - Browser-internal pages such as `chrome://extensions` cannot be scanned; the popup shows a readable explanation. Custom dropdowns, cross-origin frames and shadow DOM are not scanned, and are disclosed in the preview. Exact document targeting uses Chromium `documentId` messaging (Chrome 106+).
 
@@ -102,3 +102,5 @@ Run `npm ci`, then `npm test`. To verify real browser storage and DOM writes, ru
 The browser check uses an isolated temporary extension copy and synthetic local facts. It tests the popup confirmation handler, service-worker approval, storage round trips, native input/select/date/textarea values, input/change events, controlled email state, and preservation of existing values. The temporary copy grants loopback access and permits the popup to run in a browser tab for automation; production permissions and message checks stay unchanged. This check does not exercise the toolbar popup lifecycle or arbitrary third-party websites.
 
 Profile and field comparisons ignore object property order because browser storage may reorder keys. Actual fact changes still invalidate a preview. Focus runs before the native setter and revalidates the target; verification has a timer fallback so suspended animation frames cannot leave filling waiting indefinitely. The confirmation button shows progress and prevents duplicate clicks.
+
+See [PRIVACY.md](PRIVACY.md) for the current data inventory, retention, safeguards and limits.

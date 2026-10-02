@@ -31,9 +31,13 @@ export async function requestProfileApi({ origin, token, path = "", method = "GE
     if (!response.ok) {
       const apiError = payload?.error;
       if (response.status === 401) throw new Error("POD-16 session expired or the key was rejected. Sign in again.");
-      if (response.status === 403) throw new Error(`POD-16 denied this profile capability (${apiError?.details?.required_scope || "insufficient scope"}).`);
-      if (response.status === 409) throw new Error(apiError?.message || "The profile changed. Reload it and review your edits.");
-      throw new Error(apiError?.message || `POD-16 profile request failed (${response.status}).`);
+      if (response.status === 403) {
+        const scope = apiError?.details?.required_scope;
+        const allowedScope = ["autofill:profiles:read", "autofill:profiles:manage"].includes(scope) ? scope : "insufficient scope";
+        throw new Error(`POD-16 denied this profile capability (${allowedScope}).`);
+      }
+      if (response.status === 409) throw new Error("The profile changed. Reload it and review your edits.");
+      throw new Error(`POD-16 profile request failed (${response.status}).`);
     }
     return payload;
   } catch (error) {

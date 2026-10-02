@@ -350,3 +350,12 @@ test("browser storage property ordering does not change form semantics", async (
   const result = await harness.request({type: "pluma/fill-approved", expectedFields:[expected], items:[{fieldId:expected.id,value:"ready@example.test",overwrite:false,expected}]});
   assert.equal(result.outcomes[0].status, "filled");
 });
+
+
+test("text controls requesting keys, tokens or Aadhaar are excluded", async () => {
+  const fields = ["API key","Access token","Private key","Aadhaar number"].map(label => new FakeInput({label, name:label, value:"private-value"}));
+  const harness = await contentHarness(fields);
+  const scan = await harness.request({type:"pluma/scan-page"});
+  assert.ok(scan.fields.every(field => !field.eligible));
+  assert.equal(JSON.stringify(scan).includes("private-value"),false);
+});

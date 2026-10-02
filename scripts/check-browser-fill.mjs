@@ -58,11 +58,11 @@ try {
   const extensionId = new URL(worker.url()).hostname;
   await worker.evaluate(async () => {
     await chrome.storage.local.set({
-      profileApiSettings: {mode:"local",origin:"",selectedProfileId:"browser-test"},
-      localProfiles: [{id:"browser-test",profile_type:"personal",name:"Synthetic browser test",version:1,facts:[
+      profileApiSettings: {mode:"local",origin:"",selectedProfileId:"123e4567-e89b-12d3-a456-426614174000"},
+      localProfiles: [{id:"123e4567-e89b-12d3-a456-426614174000",profile_type:"personal",name:"Synthetic browser test",version:1,facts:[
         {key:"fullName",label:"Full name",fact_type:"text",value:"Avery Example",aliases:["full name"],source:"Synthetic"},
         {key:"email",label:"Email",fact_type:"email",value:"avery@example.test",aliases:["email"],source:"Synthetic"},
-        {key:"phone",label:"Phone",fact_type:"tel",value:"5550102020",aliases:["phone"],source:"Synthetic"},
+        {key:"phone",label:"Phone",fact_type:"phone",value:"5550102020",aliases:["phone"],source:"Synthetic"},
         {key:"studyYear",label:"Current study year",fact_type:"text",value:"Junior",aliases:["current study year"],source:"Synthetic"},
         {key:"graduationDate",label:"Expected graduation date",fact_type:"date",date_precision:"day",value:"2027-01-02",aliases:["expected graduation date"],source:"Synthetic"},
         {key:"bio",label:"Bio",fact_type:"text",value:"A synthetic test biography.",aliases:["bio"],source:"Synthetic"},
@@ -90,7 +90,23 @@ try {
   for (const name of ["full_name","email","phone","study_year","graduation_date","bio"]) {
     for (const type of ["input","change"]) assert.ok(events.some(event => event[0]===name && event[1]===type), `${name}: ${type}`);
   }
-  console.log("PASS: actual browser storage, popup confirmation, native inputs/select/date/textarea, controlled state, and existing-value protection.");
+  const settings = await context.newPage();
+  await settings.goto(`chrome-extension://${extensionId}/extension/settings.html`);
+  await settings.waitForFunction(() => !document.querySelector("#profile-editor").hidden);
+  assert.equal(await settings.locator(".contact-row").count(), 15, "Guided fields must render without technical setup");
+  await settings.evaluate(() => {
+    const row = [...document.querySelectorAll(".fact-row")].find(row => row.querySelector('[data-key="key"]').value === "fullName");
+    const value = row.querySelector('[data-key="value"]');
+    value.value = "Updated Example";
+    value.dispatchEvent(new Event("input", {bubbles:true}));
+    document.querySelector("#save-profile").click();
+  });
+  await settings.waitForFunction(() => document.querySelector("#status").textContent.startsWith("Profile saved"));
+  const saved = await worker.evaluate(async () => (await chrome.storage.local.get("localProfiles")).localProfiles[0]);
+  assert.equal(saved.facts.find(fact => fact.key === "fullName").value, "Updated Example");
+  assert.equal(saved.facts.find(fact => fact.key === "bio").value, "A synthetic test biography.", "Custom facts must be preserved");
+  assert.equal(saved.facts.length, 7, "Empty optional fields must not be stored");
+  console.log("PASS: actual browser storage, popup confirmation, native inputs/select/date/textarea, controlled state, existing-value protection, and guided settings save.");
 } finally {
   if (context) await context.close();
   server.closeAllConnections();

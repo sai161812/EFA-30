@@ -50,3 +50,14 @@ test("API response validation preserves text and declared date precision", () =>
   assert.equal(profile.facts[1].datePrecision, "year");
   assert.throws(() => validateProfile({ id: "id", profile_type: "personal", name: "Bad", version: 1, facts: [{ key: "x" }] }), /invalid profile fact/);
 });
+
+
+test("API error messages cannot echo credentials or profile data into the UI", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const status of [403,409,500]) {
+      globalThis.fetch = async () => new Response(JSON.stringify({error:{message:"private-value",details:{required_scope:"private-value"}}}),{status});
+      await assert.rejects(requestProfileApi({origin:"https://pod.example.test",token:"synthetic-token"}), error => !error.message.includes("private-value"));
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});

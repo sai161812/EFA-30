@@ -12,24 +12,16 @@ Click the browser's puzzle-piece icon, choose **EFA-30**, then click **Open sett
 
 1. Click **Use local profiles**. Ignore the optional POD-16 connection section.
 2. Under **Profiles**, choose **Personal**, enter **My profile**, and click **Create**.
-3. Click **Add fact** and enter your name using the first column below.
-4. Click **Add fact** again and enter your email using the second column.
+3. Under **Your contact details**, enter your full name, email, and phone with country code.
+4. Enter first and last names separately if you want those boxes filled; the extension never guesses name parts.
+5. Optionally add a username, your default contact address (including country/postal code), company, job title, and website. Leave irrelevant fields blank; blank optional details are not saved.
+6. Click **Save profile changes**, then **Use selected profile** if the profile is not already selected.
 
-| Box | Name fact | Email fact |
-|---|---|---|
-| Key | `fullName` | `email` |
-| Label | Full name | Email |
-| Value | Your actual full name | Your actual email address |
-| Source label | Entered by me | Entered by me |
-| Aliases | full name, applicant name | email, email address |
-| Fact type | Text | Email |
-| Date precision | Not a date | Not a date |
-
-Click **Save profile changes**, then **Use selected profile**. You do not need to edit any project files.
+Common mappings are prepared for you. **Advanced mapping details** lets you adjust aliases or sources. **Add fact** remains available for custom facts. Existing profile details are preserved. Write contact messages for each form rather than saving a universal answer.
 
 ## 3. Use it on a website
 
-1. Open a registration or application form.
+1. Open an HTTPS registration or contact form. HTTP is supported only for local development.
 2. Click **EFA-30 > Scan this page**.
 3. Matching details for empty fields are ready automatically. Review the displayed values; you can exclude or edit a suggestion if needed.
 4. Click **Confirm and fill** once to fill the matching boxes. Existing values stay in place unless you explicitly approve replacement; unclear or missing details need your input.

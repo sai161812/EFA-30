@@ -621,3 +621,27 @@ test("Chrome storage key reordering does not invalidate an unchanged profile", a
   assert.equal(result.type, "pluma/fill-result");
   assert.equal(runtime.calls.fills, 1);
 });
+
+
+test("public HTTP forms are blocked before profile data or page injection", async () => {
+  const runtime = makeRuntime();
+  await loadWorker(runtime, "insecure-website");
+  runtime.setActiveTab({id:7,url:"http://signup.example.test/"});
+  const result = await send(runtime,{type:"pluma/scan-active-tab"});
+  assert.equal(result.type,"pluma/workflow-error");
+  assert.match(result.error,/HTTPS/);
+  assert.equal(runtime.calls.inject,0);
+  assert.equal(runtime.calls.fills,0);
+});
+
+test("sensitive facts are rejected without persisting their values", async () => {
+  const runtime = makeRuntime();
+  await loadWorker(runtime,"sensitive-fact-storage");
+  await send(runtime,{type:"pluma/local-profile-enable"},settingsSender);
+  for (const key of ["password","apiKey","creditCardNumber","passportNumber"]) {
+    const result = await send(runtime,{type:"pluma/api-create-profile",profile:{profile_type:"personal",name:"Synthetic",facts:[{key,label:key,fact_type:"text",value:"private-value",source:"Synthetic",aliases:[]}]}},settingsSender);
+    assert.equal(result.type,"pluma/workflow-error");
+    assert.match(result.error,/Do not save/);
+  }
+  assert.equal(JSON.stringify(runtime.stored).includes("private-value"),false);
+});

@@ -66,3 +66,18 @@ export function stableSerialize(value) {
   return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 }
+
+
+export function isSecureFormUrl(input) {
+  try {
+    const url = new URL(input);
+    return !url.username && !url.password && (url.protocol === "https:" ||
+      (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)));
+  } catch { return false; }
+}
+
+export function isSensitiveFact(fact) {
+  const metadata = [fact.key, fact.label, ...(fact.aliases || [])].join(" ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9]+/g, " ");
+  return /\b(password|passphrase|api key|access token|refresh token|secret key|private key|credit card|card number|cvv|cvc|bank account|routing number|one time code|otp|ssn|social security|passport|aadhaar|national id)\b/.test(metadata);
+}
