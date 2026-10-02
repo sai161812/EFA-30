@@ -27,6 +27,10 @@ export async function requestProfileApi({ origin, token, path = "", method = "GE
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
+    if (response.status === 401) {
+      void response.body?.cancel().catch(() => {});
+      throw new Error("POD-16 session expired or the key was rejected. Sign in again.");
+    }
     let payload;
     try { payload = await readBoundedJson(response); }
     catch (error) {
@@ -36,7 +40,6 @@ export async function requestProfileApi({ origin, token, path = "", method = "GE
     }
     if (!response.ok) {
       const apiError = payload?.error;
-      if (response.status === 401) throw new Error("POD-16 session expired or the key was rejected. Sign in again.");
       if (response.status === 403) {
         const scope = apiError?.details?.required_scope;
         const allowedScope = ["autofill:profiles:read", "autofill:profiles:manage"].includes(scope) ? scope : "insufficient scope";

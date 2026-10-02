@@ -15,6 +15,9 @@ const sessionReady = Promise.all([chrome.storage.session.setAccessLevel({ access
 let profileActions = Promise.resolve();
 let workflowEpoch = 0;
 let previewUpdates = Promise.resolve();
+let pendingActions = Promise.resolve();
+let apiSessionUpdates = Promise.resolve();
+let memoryActions = Promise.resolve();
 let activeFillToken = null;
 const EXPIRY_ALARM = "preview-expiry";
 const RESULT_ALARM = "fill-result-expiry";
@@ -69,12 +72,17 @@ async function dispatchProfileApi(message) {
     return { type: MESSAGE.API_STATUS, origin: settings.origin, selectedProfileId: settings.selectedProfileId, authenticated: Boolean(token), localMode: settings.mode === "local", developmentProfileEnabled: dev.developmentProfileEnabled === true };
   }
   if (message.type === MESSAGE.LOCAL_PROFILE_ENABLE) {
-    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { mode: "local", origin: "", selectedProfileId: settings.mode === "local" ? settings.selectedProfileId : "" }, developmentProfileEnabled: false });
-    await chrome.storage.session.remove(API_TOKEN_KEY);
+    await updateApiSession(async () => {
+      await chrome.storage.local.set({ [API_SETTINGS_KEY]: { mode: "local", origin: "", selectedProfileId: settings.mode === "local" ? settings.selectedProfileId : "" }, developmentProfileEnabled: false });
+      await chrome.storage.session.remove(API_TOKEN_KEY);
+    });
+    await clearPending();
     return { type: message.type };
   }
   if (settings.mode === "local" && [MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE, MESSAGE.LOCAL_PROFILE_DELETE].includes(message.type)) {
-    return dispatchLocalProfile(message, settings);
+    const result = await dispatchLocalProfile(message, settings);
+    if (![MESSAGE.API_LIST_PROFILES, MESSAGE.API_READ_PROFILE].includes(message.type)) await clearPending();
+    return result;
   }
   if (message.type === MESSAGE.DEV_PROFILE_SET) {
     if (typeof message.enabled !== "boolean") throw new Error("Choose whether to enable the fictional development profile.");
@@ -87,8 +95,11 @@ async function dispatchProfileApi(message) {
     const origin = normalizeApiOrigin(message.origin);
     const permission = await chrome.permissions.contains({ origins: [`${origin}/*`] });
     if (!permission) throw new Error("This API origin is not included in this extension build. Add its exact origin permission and reload the extension.");
-    if (settings.origin && settings.origin !== origin) await chrome.storage.session.remove([API_TOKEN_KEY, SESSION_KEY]);
-    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, mode: "pod16", origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" }, developmentProfileEnabled: false });
+    await updateApiSession(async () => {
+      if (settings.origin && settings.origin !== origin) await chrome.storage.session.remove(API_TOKEN_KEY);
+      await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, mode: "pod16", origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" }, developmentProfileEnabled: false });
+    });
+    await clearPending();
     return { type: MESSAGE.API_CONFIGURE, origin };
   }
   if (message.type === MESSAGE.API_SELECT_PROFILE) {
@@ -106,13 +117,16 @@ async function dispatchProfileApi(message) {
     if (!permission) throw new Error("Grant this exact API origin in the settings page before signing in.");
     const response = await fetchProfileApi({ origin, token: message.token });
     validateProfileSummaryList(response);
-    await chrome.storage.session.set({ [API_TOKEN_KEY]: message.token });
-    await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, mode: "pod16", origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" } });
+    await updateApiSession(async () => {
+      await chrome.storage.session.set({ [API_TOKEN_KEY]: message.token });
+      await chrome.storage.local.set({ [API_SETTINGS_KEY]: { ...settings, mode: "pod16", origin, selectedProfileId: settings.origin === origin ? settings.selectedProfileId : "" } });
+    });
     await clearPending();
     return { type: MESSAGE.API_LOGIN, origin, authenticated: true, profiles: response.data };
   }
   if (message.type === MESSAGE.API_LOGOUT) {
-    await chrome.storage.session.remove([API_TOKEN_KEY, SESSION_KEY]);
+    await updateApiSession(() => chrome.storage.session.remove(API_TOKEN_KEY));
+    await clearPending();
     return { type: MESSAGE.API_LOGOUT, authenticated: false };
   }
   if (!settings.origin || !token) throw new Error("Connect to POD-16 and sign in from Settings. No development profile is used when API access is configured.");
@@ -162,8 +176,10 @@ async function dispatchLocalProfile(message, settings) {
   if (message.type === MESSAGE.LOCAL_PROFILE_DELETE) {
     profiles.splice(index, 1);
     await chrome.storage.local.set({ localProfiles: profiles, [API_SETTINGS_KEY]: { ...settings, selectedProfileId: settings.selectedProfileId === id ? "" : settings.selectedProfileId } });
-    const rules = await getMemoryRules();
-    await writeMemoryRules(rules.filter((rule) => rule.profileSource !== "local" || rule.profileId !== id));
+    await mutateMemory(async () => {
+      const rules = await readMemoryRules();
+      await writeMemoryRules(rules.filter((rule) => rule.profileSource !== "local" || rule.profileId !== id));
+    });
     return { type: message.type };
   }
   if (message.type === MESSAGE.API_UPDATE_PROFILE) {
@@ -232,6 +248,7 @@ function autofillProfile(profile) {
 }
 
 async function getSelectedProfile() {
+  const epoch = workflowEpoch;
   const local = await chrome.storage.local.get(API_SETTINGS_KEY);
   const settings = local[API_SETTINGS_KEY];
   if (settings?.mode === "local") {
@@ -253,8 +270,7 @@ async function getSelectedProfile() {
     const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token: session[API_TOKEN_KEY], path: `/${validProfileId(settings.selectedProfileId)}` }), settings.selectedProfileId);
     return { ...autofillProfile(profile), profileSource: "pod16", profileOrigin: settings.origin, profileApiMs: Math.round((performance.now() - apiStartedAt) * 100) / 100 };
   } catch (error) {
-    await clearPending();
-    if (/session expired|key was rejected/i.test(String(error?.message))) await chrome.storage.session.remove(API_TOKEN_KEY);
+    await clearPending(undefined, epoch);
     throw error;
   }
 }
@@ -263,16 +279,34 @@ async function fetchProfileApi(options) {
   try { return await requestProfileApi(options); }
   catch (error) {
     if (/session expired|key was rejected/i.test(String(error?.message))) {
-      await chrome.storage.session.remove([API_TOKEN_KEY, SESSION_KEY]);
+      await updateApiSession(async () => {
+        const [session, local] = await Promise.all([
+          chrome.storage.session.get(API_TOKEN_KEY), chrome.storage.local.get(API_SETTINGS_KEY)
+        ]);
+        if (session[API_TOKEN_KEY] === options.token && local[API_SETTINGS_KEY]?.origin === options.origin) {
+          await chrome.storage.session.remove(API_TOKEN_KEY);
+          await clearPending();
+        }
+      });
     }
     throw error;
   }
 }
 
+function updateApiSession(action) {
+  const update = apiSessionUpdates.then(action);
+  apiSessionUpdates = update.catch(() => {});
+  return update;
+}
+
 
 async function dispatchMemory(message) {
   validateMemoryMessage(message);
-  const rules = await getMemoryRules();
+  return mutateMemory(() => performMemoryAction(message));
+}
+
+async function performMemoryAction(message) {
+  const rules = await readMemoryRules();
   if (message.type === MESSAGE.MEMORY_LIST) return { type: MESSAGE.MEMORY_LIST, rules };
   if (message.type === MESSAGE.MEMORY_CLEAR) {
     await chrome.storage.local.remove(MEMORY_RULES_KEY);
@@ -306,6 +340,16 @@ function validateMemoryMessage(message) {
 }
 
 async function getMemoryRules() {
+  return mutateMemory(readMemoryRules);
+}
+
+function mutateMemory(action) {
+  const mutation = memoryActions.then(action);
+  memoryActions = mutation.catch(() => {});
+  return mutation;
+}
+
+async function readMemoryRules() {
   const saved = await chrome.storage.local.get(MEMORY_RULES_KEY);
   const rules = (Array.isArray(saved[MEMORY_RULES_KEY]) ? saved[MEMORY_RULES_KEY] : []).filter(isValidMemoryRule).map((rule) => ({
     id: rule.id, origin: rule.origin, formFingerprint: rule.formFingerprint, fieldFingerprint: rule.fieldFingerprint,
@@ -350,6 +394,10 @@ function isValidMemoryRule(rule) {
     [1, 2].includes(rule.ruleVersion) && (rule.ruleVersion === 1 || (rule.profileSource !== "pod16" ? rule.profileOrigin === null : typeof rule.profileOrigin === "string"));
 }
 async function saveRememberedRule(pending, field, row) {
+  return mutateMemory(() => persistRememberedRule(pending, field, row));
+}
+
+async function persistRememberedRule(pending, field, row) {
   if (!row.profileKey || row.directAnswer || !pending.origin || !pending.profileId) throw new Error("This mapping cannot be remembered.");
   if (!uniqueField(pending.fields, field)) throw new Error("Indistinguishable fields require review; this correction cannot be remembered.");
   const fact = pending.facts.find((item) => item.key === row.profileKey);
@@ -367,7 +415,7 @@ async function saveRememberedRule(pending, field, row) {
     profileId: pending.profileId, profileSource: pending.profileSource, profileOrigin: pending.profileOrigin, profileKey: row.profileKey,
     ruleVersion: 2, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
-  const rules = await getMemoryRules();
+  const rules = await readMemoryRules();
   const existing = rules.findIndex((item) => item.origin === rule.origin && item.profileId === rule.profileId &&
     item.profileSource === rule.profileSource && item.profileOrigin === rule.profileOrigin && item.formFingerprint === rule.formFingerprint && item.fieldFingerprint === rule.fieldFingerprint);
   if (existing >= 0) rule.id = rules[existing].id;
@@ -381,8 +429,10 @@ async function fingerprintFact(fact) {
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 async function removeMemoryRule(id) {
-  const rules = await getMemoryRules();
-  await writeMemoryRules(rules.filter((rule) => rule.id !== id));
+  return mutateMemory(async () => {
+    const rules = await readMemoryRules();
+    await writeMemoryRules(rules.filter((rule) => rule.id !== id));
+  });
 }
 function uniqueField(fields, field) {
   const descriptor = JSON.stringify(fieldSemanticDescriptor(field));
@@ -460,7 +510,7 @@ async function dispatch(message) {
   if (message.type === MESSAGE.CANCEL_PREVIEW) {
     const pending = await loadPending();
     if (pending) requirePreviewVersion(message, pending);
-    await clearPending();
+    await clearPending(pending?.token);
     return { type: MESSAGE.GET_PREVIEW, pending: false, cancelled: true };
   }
   if (message.type === MESSAGE.APPROVE_AND_FILL) return approveAndFill(message);
@@ -469,7 +519,11 @@ async function dispatch(message) {
 
 async function scanActiveTab() {
   const epoch = ++workflowEpoch;
-  await chrome.storage.session.remove(SESSION_KEY);
+  await mutatePending(async () => {
+    if (epoch !== workflowEpoch) throw new Error("The scan was superseded or cancelled. Scan again.");
+    await chrome.storage.session.remove(SESSION_KEY);
+    await chrome.alarms.clear(EXPIRY_ALARM);
+  });
   await clearFillResult();
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id || !tab.url) throw new Error("No active page is available to scan.");
@@ -515,7 +569,7 @@ async function scanActiveTab() {
   pending.scanAndMatchMs = Math.round((performance.now() - scanStartedAt) * 100) / 100;
   pending.profileApiMs = profile.profileApiMs ?? null;
   if (epoch !== workflowEpoch) throw new Error("The scan was superseded or cancelled. Scan again.");
-  await savePending(pending);
+  await savePending(pending, { epoch });
   return previewResponse(pending);
 }
 
@@ -558,7 +612,7 @@ async function updatePreview(message) {
     }
   } else if (key === "valueOverride") {
     if (typeof value !== "string" || value.length > 12000 || !field.eligible) throw new Error("The per-fill value is invalid for this field.");
-    if (field.kind === "select" && value && field.options.filter((option) => option.value === value && !option.disabled).length !== 1) throw new Error("Choose one unique enabled native option.");
+    if (field.kind === "select" && value && (field.options.filter((option) => option.value === value).length !== 1 || field.options.find((option) => option.value === value)?.disabled)) throw new Error("Choose one unique enabled native option.");
     if (field.inputType === "date" && value && !validIsoDate(value)) throw new Error("Enter a valid complete date in YYYY-MM-DD format.");
     row.valueOverride = value;
   } else if (key === "include") {
@@ -574,8 +628,9 @@ async function updatePreview(message) {
     row.include = Boolean(field.eligible && view.status === MATCH_STATUS.MATCHED && view.value && (!field.hasValue || row.overwrite));
   }
   await assertCurrentPreview(pending);
+  const previousRevision = pending.revision;
   pending.revision += 1;
-  await savePending(pending);
+  await savePending(pending, { previousRevision });
   return { type: MESSAGE.UPDATE_PREVIEW, pending: true, previewToken: pending.token, previewRevision: pending.revision, row: previewRow(row, field, pending.facts) };
 }
 
@@ -626,6 +681,10 @@ function previewRow(row, field, facts) {
     status = MATCH_STATUS.NEEDS_CHOICE;
     reason = "This value exceeds the field's supported character limit. Edit it before confirming; it will not be truncated.";
   }
+  if (field.eligible && field.kind === "select" && value && (field.options.filter((item) => item.value === value).length !== 1 || field.options.find((item) => item.value === value)?.disabled)) {
+    status = MATCH_STATUS.NEEDS_CHOICE;
+    reason = "Choose one unique enabled option from this native select.";
+  }
   const option = field.kind === "select" ? (field.options || []).find((item) => item.value === value && !item.disabled) : null;
   return {
     field, fieldId: row.fieldId, profileKey: row.profileKey,
@@ -641,6 +700,7 @@ function requirePreviewVersion(message, pending) {
   if (message.previewToken !== pending.token || message.previewRevision !== pending.revision) throw new Error("The displayed preview is stale. Scan again and review before approving.");
 }
 async function assertCurrentPreview(pending) {
+  await pendingActions;
   const current = await loadPending();
   if (!current || current.token !== pending.token || current.revision !== pending.revision) throw new Error("The preview changed, expired or was cancelled. Scan and review again.");
 }
@@ -678,7 +738,7 @@ async function performApprovedFill(pending) {
     else if (!view.value) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "No value is available. Choose a fact or enter a per-fill value." });
     else if (view.value.length > 4000) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "This value is too long for a supported form field." });
     else if (Number.isInteger(field.maxLength) && field.maxLength >= 0 && view.value.length > field.maxLength) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: `This value exceeds the field's ${field.maxLength}-character limit and will not be truncated.` });
-    else if (field.kind === "select" && field.options.filter((option) => option.value === view.value && !option.disabled).length !== 1) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "Choose one unique enabled option from this native select." });
+    else if (field.kind === "select" && (field.options.filter((option) => option.value === view.value).length !== 1 || field.options.find((option) => option.value === view.value)?.disabled)) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "Choose one unique enabled option from this native select." });
     else if (field.inputType === "date" && !validIsoDate(view.value)) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "A complete valid YYYY-MM-DD date is required." });
     else if (field.hasValue && !row.overwrite) outcomes.push({ fieldId: row.fieldId, status: "skipped", message: "This field already has a value. Approve overwrite for this field to replace it." });
     else valid.push({ fieldId: row.fieldId, value: view.value, overwrite: row.overwrite, expected: field });
@@ -687,7 +747,7 @@ async function performApprovedFill(pending) {
   if (valid.length > 100) throw new Error("Select at most 100 fields per approval.");
   pending.filling = true;
   activeFillToken = pending.token;
-  await savePending(pending);
+  await savePending(pending, { previousRevision: pending.revision });
   try {
     const tab = await chrome.tabs.get(pending.tabId);
     if (!tab?.url || tab.url !== pending.targetUrl || new URL(tab.url).origin !== pending.origin) throw new Error("The target page changed. Scan and review the current page again.");
@@ -746,7 +806,7 @@ async function loadPending() {
     await clearPending(pending.token);
     throw new Error("A fill was interrupted by a worker restart. Some fields may have changed; review the page before rescanning.");
   }
-  if (pending.expiresAt <= Date.now()) { await clearPending(); return null; }
+  if (pending.expiresAt <= Date.now()) { await clearPending(pending.token); return null; }
   return pending;
 }
 
@@ -762,18 +822,42 @@ async function loadFillResult() {
   return result;
 }
 
-async function savePending(pending) {
-  await chrome.storage.session.set({ [SESSION_KEY]: pending });
-  await chrome.alarms.create(EXPIRY_ALARM, { when: pending.expiresAt });
+function mutatePending(action) {
+  const mutation = pendingActions.then(action);
+  pendingActions = mutation.catch(() => {});
+  return mutation;
 }
-async function clearPending(token) {
-  if (token) {
-    const saved = await chrome.storage.session.get(SESSION_KEY);
-    if (saved[SESSION_KEY]?.token !== token) return;
-  }
-  workflowEpoch += 1;
-  await chrome.storage.session.remove(SESSION_KEY);
-  await chrome.alarms.clear(EXPIRY_ALARM);
+async function savePending(pending, { epoch = workflowEpoch, previousRevision } = {}) {
+  return mutatePending(async () => {
+    const changed = () => epoch !== workflowEpoch || pending.expiresAt <= Date.now();
+    if (changed()) throw new Error("The preview changed, expired or was cancelled. Scan and review again.");
+    if (previousRevision !== undefined) {
+      const saved = await chrome.storage.session.get(SESSION_KEY);
+      if (saved[SESSION_KEY]?.token !== pending.token || saved[SESSION_KEY]?.revision !== previousRevision) {
+        throw new Error("The preview changed, expired or was cancelled. Scan and review again.");
+      }
+    }
+    await chrome.storage.session.set({ [SESSION_KEY]: pending });
+    await chrome.alarms.create(EXPIRY_ALARM, { when: pending.expiresAt });
+    // A new scan can start while Chrome completes the storage write.
+    if (changed()) {
+      await chrome.storage.session.remove(SESSION_KEY);
+      await chrome.alarms.clear(EXPIRY_ALARM);
+      throw new Error("The preview changed, expired or was cancelled. Scan and review again.");
+    }
+  });
+}
+async function clearPending(token, epoch) {
+  return mutatePending(async () => {
+    if (epoch !== undefined && epoch !== workflowEpoch) return;
+    if (token) {
+      const saved = await chrome.storage.session.get(SESSION_KEY);
+      if (saved[SESSION_KEY]?.token !== token) return;
+    }
+    workflowEpoch += 1;
+    await chrome.storage.session.remove(SESSION_KEY);
+    await chrome.alarms.clear(EXPIRY_ALARM);
+  });
 }
 
 function readableError(error) {

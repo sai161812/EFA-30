@@ -4,6 +4,8 @@ const status = document.querySelector("#status");
 const preview = document.querySelector("#preview");
 const rows = document.querySelector("#rows");
 const timers = new Map();
+// Keep newer edits visible while older queued updates redraw a field.
+const valueDrafts = new Map();
 let updateQueue = Promise.resolve();
 let currentPreview = null;
 let isBusy = false;
@@ -47,13 +49,14 @@ async function switchFillProfile() {
   if (!profileId || profileId === selectedProfileId) { select.value = selectedProfileId; return; }
   setBusy(true);
   try {
-    timers.forEach(clearTimeout); timers.clear();
+    clearValueTimers();
     await updateQueue;
     const response = await chrome.runtime.sendMessage({type:MESSAGE.SELECT_FILL_PROFILE,profileId});
     if (handleError(response)) { select.value = selectedProfileId; return; }
     if (response?.type !== MESSAGE.SELECT_FILL_PROFILE || response.profileId !== profileId) throw new Error("Profile selection was not acknowledged.");
     selectedProfileId = profileId;
     currentPreview = null;
+    valueDrafts.clear();
     updateError = null;
     preview.hidden = true;
     rows.replaceChildren();
@@ -83,9 +86,9 @@ async function scan() {
   document.querySelector("#outcomes").hidden = true;
   setStatus("Scanning the active page…");
   try {
-    timers.forEach(clearTimeout);
-    timers.clear();
+    clearValueTimers();
     await updateQueue;
+    valueDrafts.clear();
     updateError = null;
     currentPreview = null;
     preview.hidden = true;
@@ -122,12 +125,12 @@ async function approve() {
 async function cancelPreview() {
   setBusy(true);
   try {
-    timers.forEach(clearTimeout);
-    timers.clear();
+    clearValueTimers();
     await updateQueue;
     const response = await chrome.runtime.sendMessage({ type: MESSAGE.CANCEL_PREVIEW, ...previewVersion() });
     if (handleError(response)) return;
     currentPreview = null;
+    valueDrafts.clear();
     preview.hidden = true;
     rows.replaceChildren();
     setStatus("Preview cancelled and pending data cleared.");
@@ -189,7 +192,7 @@ function createRow(row, profile) {
   card.append(includeLabel);
   const suggestedValue = document.createElement("p");
   suggestedValue.className = "suggested-value";
-  suggestedValue.textContent = row.value || "No suggestion";
+  suggestedValue.textContent = displayedValue(row) || "No suggestion";
   card.append(suggestedValue);
 
   const mappingLabel = document.createElement("label");
@@ -213,8 +216,6 @@ function createRow(row, profile) {
   mapping.disabled = !row.field.eligible || row.directAnswer || currentPreview.filling || isBusy;
   if (row.directAnswer) mapping.setAttribute("aria-description", "Application questions accept direct per-fill answers only.");
   mapping.addEventListener("change", () => {
-    if (timers.has(row.fieldId)) clearTimeout(timers.get(row.fieldId));
-    timers.delete(row.fieldId);
     sendChange(row.fieldId, { profileKey: mapping.value || null }, true);
   });
   mappingLabel.append(mapping);
@@ -243,13 +244,14 @@ function createRow(row, profile) {
     (row.field.options || []).filter((option) => !option.disabled).forEach((optionData) => {
       const option = document.createElement("option"); option.value = optionData.value; option.textContent = optionData.label; value.append(option);
     });
-    value.value = row.value;
+    value.value = displayedValue(row);
     value.addEventListener("change", () => sendChange(row.fieldId, { valueOverride: value.value }, true));
   } else {
     value.rows = 2;
-    value.value = row.value;
+    value.value = displayedValue(row);
     value.addEventListener("input", () => scheduleValue(row.fieldId, value.value));
   }
+  value.className = "field-value";
   value.disabled = !row.field.eligible || currentPreview.filling || isBusy;
   value.setAttribute("aria-label", row.directAnswer ? `Direct answer for ${row.field.label}` : `Value for ${row.field.label}`);
   valueLabel.append(value);
@@ -290,37 +292,49 @@ function profileFacts() {
 }
 
 function scheduleValue(fieldId, value) {
-  if (timers.has(fieldId)) clearTimeout(timers.get(fieldId));
-  timers.set(fieldId, setTimeout(() => {
+  if (timers.has(fieldId)) clearTimeout(timers.get(fieldId).timer);
+  const draft = { value };
+  valueDrafts.set(fieldId, draft);
+  const timer = setTimeout(() => {
     timers.delete(fieldId);
-    enqueueUpdate(fieldId, { valueOverride: value });
-  }, 180));
+    enqueueUpdate(fieldId, { valueOverride: draft.value }, false, draft);
+  }, 180);
+  timers.set(fieldId, { timer, draft });
 }
 
 async function flushValueUpdates() {
-  for (const [fieldId, timer] of timers) {
-    clearTimeout(timer);
-    timers.delete(fieldId);
-    const value = rows.querySelector(`[data-field-id="${CSS.escape(fieldId)}"] textarea`)?.value ?? "";
-    enqueueUpdate(fieldId, { valueOverride: value });
-  }
+  clearValueTimers();
+  for (const [fieldId, draft] of valueDrafts) if (!draft.queued) enqueueUpdate(fieldId, { valueOverride: draft.value }, false, draft);
   await updateQueue;
   if (updateError) throw updateError;
 }
 
 function sendChange(fieldId, change, redraw = false) {
-  if (Object.hasOwn(change, "profileKey") && timers.has(fieldId)) {
-    clearTimeout(timers.get(fieldId));
+  if (Object.hasOwn(change, "profileKey")) {
+    if (timers.has(fieldId)) clearTimeout(timers.get(fieldId).timer);
     timers.delete(fieldId);
+    valueDrafts.delete(fieldId);
   }
-  enqueueUpdate(fieldId, change, redraw);
+  const draft = Object.hasOwn(change, "valueOverride") ? { value: change.valueOverride } : null;
+  if (draft) valueDrafts.set(fieldId, draft);
+  enqueueUpdate(fieldId, change, redraw, draft);
+}
+
+function clearValueTimers() {
+  timers.forEach(({ timer }) => clearTimeout(timer));
+  timers.clear();
+}
+
+function displayedValue(row) {
+  return valueDrafts.get(row.fieldId)?.value ?? row.value;
 }
 
 function previewVersion() {
   return { previewToken: currentPreview?.previewToken, previewRevision: currentPreview?.previewRevision };
 }
-function enqueueUpdate(fieldId, changes, redraw = false) {
+function enqueueUpdate(fieldId, changes, redraw = false, draft = null) {
   const token = currentPreview?.previewToken;
+  if (draft) draft.queued = true;
   updateQueue = updateQueue.then(async () => {
     if (updateError) return;
     if (token !== currentPreview?.previewToken) throw new Error("The preview changed. Scan again to review your choices.");
@@ -329,9 +343,10 @@ function enqueueUpdate(fieldId, changes, redraw = false) {
     if (response.previewToken !== token || !Number.isInteger(response.previewRevision)) throw new Error("The preview update was not acknowledged. Scan again.");
     currentPreview.previewRevision = response.previewRevision;
     currentPreview.rows = currentPreview.rows.map((row) => row.fieldId === fieldId ? response.row : row);
+    if (draft && valueDrafts.get(fieldId) === draft) valueDrafts.delete(fieldId);
     updateSelectionSummary();
     const valueText = rows.querySelector(`[data-field-id="${CSS.escape(fieldId)}"] .suggested-value`);
-    if (valueText) valueText.textContent = response.row.value || "No suggestion";
+    if (valueText) valueText.textContent = displayedValue(response.row) || "No suggestion";
     const card = rows.querySelector(`[data-field-id="${CSS.escape(fieldId)}"]`);
     const include = card?.querySelector(".include-field");
     if (include) include.checked = response.row.include;
@@ -348,11 +363,20 @@ function enqueueUpdate(fieldId, changes, redraw = false) {
 function renderRow(row) {
   const oldCard = rows.querySelector(`[data-field-id="${CSS.escape(row.fieldId)}"]`);
   if (!oldCard) return;
-  const restoreMappingFocus = document.activeElement === oldCard.querySelector("select");
+  const oldValue = oldCard.querySelector(".field-value");
+  const restoreValueFocus = document.activeElement === oldValue;
+  const restoreMappingFocus = document.activeElement === oldCard.querySelector(".profile-mapping");
+  const selectionStart = oldValue?.selectionStart;
+  const selectionEnd = oldValue?.selectionEnd;
   const replacement = createRow(row, currentPreview.profile);
   replacement.querySelector("details").open = oldCard.querySelector("details")?.open || false;
   oldCard.replaceWith(replacement);
-  if (restoreMappingFocus) replacement.querySelector("select")?.focus();
+  if (restoreMappingFocus) replacement.querySelector(".profile-mapping")?.focus();
+  if (restoreValueFocus) {
+    const value = replacement.querySelector(".field-value");
+    value?.focus();
+    if (Number.isInteger(selectionStart) && Number.isInteger(selectionEnd)) value?.setSelectionRange(selectionStart, selectionEnd);
+  }
 }
 
 function renderOutcomes(outcomes) {

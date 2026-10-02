@@ -73,6 +73,34 @@ test("year-only facts never create a full date or month/day", () => {
   assert.deepEqual(formatDateForField({ value: "2027", date_precision: "year" }, "date").status, MATCH_STATUS.MISSING_VALUE);
   assert.equal(formatDateForField({ value: "2027-05-20", date_precision: "day" }, "date").value, "2027-05-20");
 });
+
+test("address composition requires one approved fact for each same-scope component", () => {
+  const components = [
+    { key: "currentAddressLine1", label: "Current address line 1", value: "Old Road", type: "text", aliases: [] },
+    { key: "currentStreet", label: "Current street", value: "New Road", type: "text", aliases: [] },
+    { key: "currentCity", label: "Current city", value: "Town", type: "text", aliases: [] }
+  ];
+  const address = field({ label: "Current address" });
+  assert.equal(matchField(address, components).status, MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(formatAddress(components, "current").value, "");
+  assert.equal(matchField(address, [components[0], components[2]]).composedValue, "Old Road, Town");
+  assert.equal(matchField(address, [components[0], components[2], { ...components[1], key: "permanentStreet", label: "Permanent street" }]).composedValue, "Old Road, Town");
+  const wholeAddresses = [
+    { key: "currentAddressA", label: "Current address", value: "Old Road, Town", type: "text", aliases: [] },
+    { key: "currentAddressB", label: "Current address", value: "New Road, Town", type: "text", aliases: [] }
+  ];
+  assert.equal(matchField(address, wholeAddresses).status, MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(matchField(address, [wholeAddresses[0]]).composedValue, "Old Road, Town");
+});
+
+test("native select matches cannot share an exact value with a disabled option", () => {
+  const options = [{ value: "Junior", label: "Unavailable year", disabled: true }, { value: "Junior", label: "Junior", disabled: false }];
+  const select = field({ kind: "select", inputType: "select-one", label: "Current year of study", options });
+  const fact = facts.find((item) => item.key === "studyYear");
+  assert.equal(matchField(select, facts).status, MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(formatSelectedFact(select, fact).status, MATCH_STATUS.NEEDS_CHOICE);
+  assert.equal(matchField({ ...select, options: [{ ...options[0], value: "Unavailable" }, options[1]] }, facts).formattedValue, "Junior");
+});
 test("URL controls accept URL facts and block incompatible fact types", () => {
   const urlField = field({ inputType: "url", label: "GitHub URL", name: "github_url" });
   assert.equal(matchField(urlField, facts).profileKey, "github");

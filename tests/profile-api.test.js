@@ -90,3 +90,19 @@ test("untrusted profile payloads reject oversized, unknown and duplicate data", 
   assert.throws(()=>validateProfileSummaryList({data:Array(251).fill(summary)}),/invalid profile list/);
   assert.deepEqual(validateProfileSummaryList({data:[{...summary,privateValue:"must-not-leak"}]}),[summary]);
 });
+
+test("authentication expiry is classified without parsing or waiting for an error body", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const body of ["Unauthorized", "", "<html>Sign in again</html>"]) {
+      globalThis.fetch = async () => new Response(body, { status: 401 });
+      await assert.rejects(requestProfileApi({ origin: "https://pod.example.test", token: "synthetic-token" }), /session expired/);
+    }
+    let cancelled = false;
+    globalThis.fetch = async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 401 });
+    await assert.rejects(requestProfileApi({ origin: "https://pod.example.test", token: "synthetic-token" }), /session expired/);
+    assert.equal(cancelled, true);
+    globalThis.fetch = async () => new Response(new ReadableStream({ cancel() { return new Promise(() => {}); } }), { status: 401 });
+    await assert.rejects(requestProfileApi({ origin: "https://pod.example.test", token: "synthetic-token" }), /session expired/);
+  } finally { globalThis.fetch = originalFetch; }
+});

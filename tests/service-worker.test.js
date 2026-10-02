@@ -68,6 +68,23 @@ function send(runtime, message, sender = popupSender) {
   });
 }
 
+function pausePendingWrite(predicate) {
+  const originalSet = chrome.storage.session.set;
+  let release, started;
+  const reached = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  let paused = false;
+  chrome.storage.session.set = async (record) => {
+    if (!paused && record.pendingPreview && predicate(record.pendingPreview)) {
+      paused = true;
+      started();
+      await gate;
+    }
+    return originalSet(record);
+  };
+  return { reached, release };
+}
+
 test("preview is session-persisted, ready but unfilled by default, document-bound and explicitly cleared on cancel", async () => {
   const runtime = makeRuntime();
   await loadWorker(runtime, "session-test");
@@ -768,4 +785,227 @@ test("postal PIN facts are accepted without permitting security PIN storage", as
   const result=await send(runtime,{type:"pluma/api-create-profile",profile:{profile_type:"personal",name:"Postal",facts:[{key:"currentPostalCode",label:"Postal code",fact_type:"postal_code",value:"005501",source:"Synthetic",aliases:["pin code","pincode"]}]}},settingsSender);
   assert.equal(result.type,"pluma/api-create-profile");
   assert.equal(result.profile.facts[0].value,"005501");
+});
+
+test("cancelling a delayed preview update cannot resurrect the cancelled preview", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "cancel-delayed-update");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  const write = pausePendingWrite((pending) => pending.revision === 1);
+  const update = send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: false } });
+  await write.reached;
+  const cancel = send(runtime, { type: "pluma/cancel-preview" });
+  await new Promise(setImmediate);
+  write.release();
+  const [, cancelled] = await Promise.all([update, cancel]);
+  assert.equal(cancelled.cancelled, true);
+  assert.equal(runtime.stored.pendingPreview, undefined);
+  assert.equal((await send(runtime, { type: "pluma/get-preview" })).pending, false);
+  assert.equal(runtime.calls.fills, 0);
+});
+
+test("a new scan supersedes an older scan whose storage write is delayed", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "superseded-delayed-scan");
+  const write = pausePendingWrite(() => true);
+  const oldScan = send(runtime, { type: "pluma/scan-active-tab" });
+  await write.reached;
+  const newScan = send(runtime, { type: "pluma/scan-active-tab" });
+  await new Promise(setImmediate);
+  write.release();
+  const [oldResult, newResult] = await Promise.all([oldScan, newScan]);
+  assert.equal(oldResult.type, "pluma/workflow-error");
+  assert.equal(newResult.pending, true);
+  assert.equal(runtime.stored.pendingPreview.token, newResult.previewToken);
+  assert.equal(runtime.calls.fills, 0);
+});
+
+test("cancelling while the fill marker is being saved prevents page disclosure", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "cancel-delayed-fill-marker");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  const write = pausePendingWrite((pending) => pending.filling);
+  const approval = send(runtime, { type: "pluma/approve-and-fill" });
+  await write.reached;
+  const cancel = send(runtime, { type: "pluma/cancel-preview" });
+  await new Promise(setImmediate);
+  write.release();
+  const [result, cancelled] = await Promise.all([approval, cancel]);
+  assert.equal(cancelled.cancelled, true);
+  assert.equal(result.type, "pluma/workflow-error");
+  assert.equal(runtime.calls.fills, 0);
+  assert.equal(runtime.stored.pendingPreview, undefined);
+});
+
+test("a delayed expired API request cannot erase a newer login or preview", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "expired-old-api-request");
+  const id = "123e4567-e89b-12d3-a456-426614174000";
+  runtime.stored["local:profileApiSettings"] = { origin: "http://127.0.0.1:8000", selectedProfileId: id };
+  runtime.stored.profileApiToken = "old-synthetic-token";
+  const originalFetch = globalThis.fetch;
+  let release, started;
+  const reached = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const summary = { id, profile_type: "personal", name: "Synthetic", version: 1 };
+  globalThis.fetch = async (url, options) => {
+    if (options.headers.Authorization === "Bearer old-synthetic-token") {
+      started(); await gate;
+      return new Response("Unauthorized", { status: 401 });
+    }
+    return new Response(JSON.stringify(url.endsWith("/profiles") ? { data: [summary] } : {
+      ...summary, facts: [{ key: "email", label: "Email", fact_type: "email", value: "new@example.test", source: "Synthetic", aliases: [] }]
+    }), { status: 200 });
+  };
+  try {
+    const oldScan = send(runtime, { type: "pluma/scan-active-tab" });
+    await reached;
+    const login = await send(runtime, { type: "pluma/api-login", origin: "http://127.0.0.1:8000", token: "new-synthetic-token" }, settingsSender);
+    assert.equal(login.authenticated, true);
+    const newScan = await send(runtime, { type: "pluma/scan-active-tab" });
+    release();
+    const oldResult = await oldScan;
+    assert.match(oldResult.error, /session expired/);
+    assert.equal(runtime.stored.profileApiToken, "new-synthetic-token");
+    assert.equal(runtime.stored.pendingPreview.token, newScan.previewToken);
+    assert.equal((await send(runtime, { type: "pluma/approve-and-fill" })).type, "pluma/fill-result");
+  } finally { release(); globalThis.fetch = originalFetch; }
+});
+
+test("plain-text API authentication expiry clears the matching session", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "plain-text-expired-api-key");
+  runtime.stored["local:profileApiSettings"] = { origin: "http://127.0.0.1:8000", selectedProfileId: "123e4567-e89b-12d3-a456-426614174000" };
+  runtime.stored.profileApiToken = "expired-synthetic-token";
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("Unauthorized", { status: 401 });
+  try {
+    const result = await send(runtime, { type: "pluma/scan-active-tab" });
+    assert.match(result.error, /session expired/);
+    assert.equal(runtime.stored.profileApiToken, undefined);
+    assert.equal(runtime.stored.pendingPreview, undefined);
+    assert.equal(runtime.calls.inject, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("manual select answers reject duplicate values even when one option is disabled", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "duplicate-disabled-select-value");
+  const base = (await send(runtime, { type: "pluma/scan-active-tab" })).rows[0].field;
+  runtime.setFields([{ ...base, kind: "select", inputType: "select-one", label: "Choice", name: "choice", autocomplete: "", options: [
+    { value: "same", label: "Enabled", disabled: false }, { value: "same", label: "Disabled", disabled: true }
+  ] }]);
+  const scan = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(scan.rows[0].include, false);
+  const result = await send(runtime, { type: "pluma/update-preview", fieldId: base.id, changes: { valueOverride: "same" } });
+  assert.equal(result.type, "pluma/workflow-error");
+  assert.match(result.error, /unique enabled/);
+  assert.equal(runtime.calls.fills, 0);
+});
+
+test("logout invalidates a scan started while the old token removal is delayed", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "scan-during-delayed-logout");
+  const id = "123e4567-e89b-12d3-a456-426614174000";
+  runtime.stored["local:profileApiSettings"] = { origin: "http://127.0.0.1:8000", selectedProfileId: id };
+  runtime.stored.profileApiToken = "old-synthetic-token";
+  const originalFetch = globalThis.fetch;
+  const originalRemove = chrome.storage.session.remove;
+  let release, started;
+  const reached = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  chrome.storage.session.remove = async (keys) => {
+    if (keys === "profileApiToken") { started(); await gate; }
+    return originalRemove(keys);
+  };
+  globalThis.fetch = async () => new Response(JSON.stringify({ id, profile_type: "personal", name: "Synthetic", version: 1,
+    facts: [{ key: "email", label: "Email", fact_type: "email", value: "old@example.test", source: "Synthetic", aliases: [] }]
+  }), { status: 200 });
+  try {
+    const logout = send(runtime, { type: "pluma/api-logout" }, settingsSender);
+    await reached;
+    const scan = await send(runtime, { type: "pluma/scan-active-tab" });
+    assert.equal(scan.pending, true);
+    release();
+    assert.equal((await logout).authenticated, false);
+    assert.equal(runtime.stored.profileApiToken, undefined);
+    assert.equal(runtime.stored.pendingPreview, undefined);
+    assert.equal(runtime.calls.fills, 0);
+  } finally { release(); globalThis.fetch = originalFetch; }
+});
+
+test("new login cannot be erased between expired-session identity check and token removal", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "login-during-expiry-removal");
+  const id = "123e4567-e89b-12d3-a456-426614174000";
+  runtime.stored["local:profileApiSettings"] = { origin: "http://127.0.0.1:8000", selectedProfileId: id };
+  runtime.stored.profileApiToken = "old-synthetic-token";
+  const originalFetch = globalThis.fetch;
+  const originalRemove = chrome.storage.session.remove;
+  let release, started;
+  const reached = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  chrome.storage.session.remove = async (keys) => {
+    if (keys === "profileApiToken") { started(); await gate; }
+    return originalRemove(keys);
+  };
+  globalThis.fetch = async (_url, options) => new Response(JSON.stringify(options.headers.Authorization === "Bearer old-synthetic-token" ? {} : {
+    data: [{ id, profile_type: "personal", name: "Synthetic", version: 1 }]
+  }), { status: options.headers.Authorization === "Bearer old-synthetic-token" ? 401 : 200 });
+  try {
+    const oldScan = send(runtime, { type: "pluma/scan-active-tab" });
+    await reached;
+    const login = send(runtime, { type: "pluma/api-login", origin: "http://127.0.0.1:8000", token: "new-synthetic-token" }, settingsSender);
+    await new Promise(setImmediate);
+    assert.equal(runtime.stored.profileApiToken, "old-synthetic-token");
+    release();
+    const [expired, loggedIn] = await Promise.all([oldScan, login]);
+    assert.match(expired.error, /session expired/);
+    assert.equal(loggedIn.authenticated, true);
+    assert.equal(runtime.stored.profileApiToken, "new-synthetic-token");
+  } finally { release(); globalThis.fetch = originalFetch; }
+});
+
+test("clearing correction memory after a delayed deletion cannot resurrect saved rules", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "clear-during-memory-deletion");
+  const rule = { origin: "https://example.test", formFingerprint: "form", fieldFingerprint: "field", fieldDescriptor: { kind: "input", inputType: "email" },
+    profileId: "professional-demo", profileSource: "development", profileOrigin: null, profileKey: "email", factFingerprint: "fact", ruleVersion: 2 };
+  runtime.stored["local:correctionMemoryRules"] = [{ ...rule, id: "delete" }, { ...rule, id: "keep" }];
+  await send(runtime, { type: "pluma/memory-list" }, settingsSender);
+  const originalSet = chrome.storage.local.set;
+  let release, started;
+  const reached = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  chrome.storage.local.set = async (record) => {
+    if (record.correctionMemoryRules?.length === 1) { started(); await gate; }
+    return originalSet(record);
+  };
+  const deletion = send(runtime, { type: "pluma/memory-delete", ruleId: "delete" }, settingsSender);
+  await reached;
+  const clear = send(runtime, { type: "pluma/memory-clear" }, settingsSender);
+  await new Promise(setImmediate);
+  release();
+  const [deleted, cleared] = await Promise.all([deletion, clear]);
+  assert.equal(deleted.type, "pluma/memory-delete");
+  assert.deepEqual(cleared.rules, []);
+  assert.equal(runtime.stored["local:correctionMemoryRules"], undefined);
+  assert.deepEqual((await send(runtime, { type: "pluma/memory-list" }, settingsSender)).rules, []);
+});
+
+test("clearing correction memory after a delayed preview save cannot resurrect its mapping", async () => {
+  const runtime = makeRuntime(); await loadWorker(runtime, "clear-during-preview-memory-save");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { profileKey: "personalEmail" } });
+  const originalSet = chrome.storage.local.set;
+  let release, started;
+  const reached = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  chrome.storage.local.set = async (record) => {
+    if (record.correctionMemoryRules) { started(); await gate; }
+    return originalSet(record);
+  };
+  const remember = send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { rememberMapping: true } });
+  await reached;
+  const clear = send(runtime, { type: "pluma/memory-clear" }, settingsSender);
+  await new Promise(setImmediate);
+  release();
+  const [remembered, cleared] = await Promise.all([remember, clear]);
+  assert.equal(remembered.type, "pluma/update-preview");
+  assert.deepEqual(cleared.rules, []);
+  assert.equal(runtime.stored["local:correctionMemoryRules"], undefined);
+  const nextScan = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.equal(nextScan.rows[0].remembered, false);
+  assert.equal(nextScan.rows[0].profileKey, "email");
 });

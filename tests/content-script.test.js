@@ -191,6 +191,19 @@ test("native date input is supported and retained after events", async () => {
   assert.equal(date.value, "2027-05-20");
 });
 
+test("a disabled native option sharing the approved value cannot be selected accidentally", async () => {
+  const select = new FakeSelect({ label: "Current year of study", options: [
+    { value: "", label: "Choose a year", disabled: false },
+    { value: "Junior", label: "Unavailable year", disabled: true },
+    { value: "Junior", label: "Junior", disabled: false }
+  ] });
+  const harness = await contentHarness([select]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  const result = await harness.request({ type: "pluma/fill-approved", items: [{ fieldId: scan.fields[0].id, value: "Junior", overwrite: false, expected: scan.fields[0] }] });
+  assert.equal(result.outcomes[0].status, "skipped");
+  assert.equal(select.value, "");
+});
+
 test("native select options changing after preview invalidate the approval", async () => {
   const select = new FakeSelect({ label: "Current year of study", options: [{ value: "Junior", label: "Junior", disabled: false }] });
   const harness = await contentHarness([select]);
@@ -248,6 +261,48 @@ test("a newly inserted dynamic form field appears in a fresh scan", async () => 
   assert.equal(updated.fields.length, 2);
   assert.equal(updated.fields[1].label, "Current city");
   assert.equal(updated.fields[1].eligible, true);
+});
+
+test("sensitive group context beyond 240 characters is excluded before values are read", async () => {
+  const text = "Details ".repeat(40) + "Security code";
+  const heading = { innerText: text, textContent: text, matches(selector) { return selector.includes("h2"); } };
+  const group = { children: [heading], parentElement: null, matches(selector) { return selector.includes("section"); }, getAttribute() { return ""; } };
+  const input = new FakeInput({ name: "reference", label: "Reference" });
+  input.parentElement = group;
+  let reads = 0;
+  Object.defineProperty(input, "value", { get() { reads++; return "private-value"; } });
+  const harness = await contentHarness([input]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  assert.equal(scan.fields[0].eligible, false);
+  assert.match(scan.fields[0].context, /Security code$/);
+  assert.equal(reads, 0);
+});
+
+test("group context changing beyond 240 characters invalidates approval", async () => {
+  const text = "Details ".repeat(40) + "Current mailing address";
+  const heading = { innerText: text, textContent: text, matches(selector) { return selector.includes("h2"); } };
+  const group = { children: [heading], parentElement: null, matches(selector) { return selector.includes("section"); }, getAttribute() { return ""; } };
+  const input = new FakeInput({ name: "street", label: "Street" });
+  input.parentElement = group;
+  const harness = await contentHarness([input]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  heading.innerText = "Details ".repeat(40) + "Permanent mailing address";
+  heading.textContent = heading.innerText;
+  const result = await harness.request({ type: "pluma/fill-approved", items: [{ fieldId: scan.fields[0].id, value: "Approved address", overwrite: false, expected: scan.fields[0] }] });
+  assert.equal(result.outcomes[0].status, "skipped");
+  assert.equal(input.value, "");
+});
+
+test("oversized group context stays bounded and excludes the control", async () => {
+  const text = "A".repeat(50000);
+  const heading = { innerText: text, textContent: text, matches(selector) { return selector.includes("h2"); } };
+  const group = { children: [heading], parentElement: null, matches(selector) { return selector.includes("section"); }, getAttribute() { return ""; } };
+  const input = new FakeInput({ name: "reference", label: "Reference" });
+  input.parentElement = group;
+  const harness = await contentHarness([input]);
+  const scan = await harness.request({ type: "pluma/scan-page" });
+  assert.equal(scan.fields[0].eligible, false);
+  assert.equal(scan.fields[0].context.length, 4001);
 });
 
 test("camelCase sensitive names are excluded even with an innocuous label", async () => {

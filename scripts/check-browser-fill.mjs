@@ -9,6 +9,7 @@ import { chromium } from "playwright-core";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "efa-browser-fill-"));
 let context;
+const pageErrors = [];
 const html = `<!doctype html><form id="signup" method="post">
 <label>Full name<input name="full_name" autocomplete="name"></label>
 <label>Email<input name="email" type="email" autocomplete="email"></label>
@@ -54,6 +55,7 @@ try {
     executablePath: browser, headless: true,
     args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`]
   });
+  context.on("page", page => page.on("pageerror", error => pageErrors.push(error.message)));
   context.setDefaultTimeout(10000);
   const worker = context.serviceWorkers()[0] || await context.waitForEvent("serviceworker", {timeout:15000});
   const extensionId = new URL(worker.url()).hostname;
@@ -93,6 +95,39 @@ try {
   for (const name of ["full_name","email","phone","study_year","graduation_date","bio","country"]) {
     for (const type of ["input","change"]) assert.ok(events.some(event => event[0]===name && event[1]===type), `${name}: ${type}`);
   }
+  // Delay one real mapping acknowledgment so a newer typed value spans the row redraw.
+  await page.reload(); await page.bringToFront();
+  await popup.evaluate(() => document.querySelector("#scan").click());
+  await popup.waitForFunction(() => !document.querySelector("#scan").disabled && !document.querySelector("#preview").hidden);
+  await popup.evaluate(() => {
+    window.originalSendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+    window.originalSetTimeout = window.setTimeout;
+    window.setTimeout = (callback, delay, ...args) => window.originalSetTimeout(callback, delay === 180 ? 5000 : delay, ...args);
+    chrome.runtime.sendMessage = async message => {
+      const response = await window.originalSendMessage(message);
+      if (message.type === "pluma/update-preview" && Object.hasOwn(message.changes || {}, "profileKey")) {
+        await new Promise(resolve => { window.releaseMappingReply = resolve; });
+      }
+      return response;
+    };
+    window.previousNameCard = document.querySelector(".field-card");
+    window.previousNameCard.querySelector("details").open = true;
+    const mapping = window.previousNameCard.querySelector(".profile-mapping");
+    mapping.value = "fullName";
+    mapping.dispatchEvent(new Event("change", {bubbles:true}));
+  });
+  await popup.waitForFunction(() => typeof window.releaseMappingReply === "function");
+  await popup.locator(".field-card").first().locator(".field-value").fill("Latest typed name");
+  await popup.evaluate(() => window.releaseMappingReply());
+  await popup.waitForFunction(() => !window.previousNameCard.isConnected);
+  assert.equal(await popup.locator(".field-card").first().locator(".field-value").inputValue(), "Latest typed name");
+  await popup.evaluate(() => document.querySelector("#approve").click());
+  await popup.waitForFunction(() => !document.querySelector("#outcomes").hidden);
+  assert.equal(await page.locator('[name=full_name]').inputValue(), "Latest typed name", "Confirmation must fill the latest displayed draft");
+  await popup.evaluate(() => {
+    chrome.runtime.sendMessage = window.originalSendMessage;
+    window.setTimeout = window.originalSetTimeout;
+  });
   const settings = await context.newPage();
   await settings.goto(`chrome-extension://${extensionId}/extension/settings.html`);
   await settings.waitForFunction(() => !document.querySelector("#profile-editor").hidden);
@@ -178,7 +213,8 @@ try {
   await reopened.waitForFunction(() => !document.querySelector("#outcomes").hidden);
   assert.equal(await page.locator('[name=email]').inputValue(),"");
   assert.match(await reopened.locator("#outcome-list").innerText(),/Email: skipped/);
-  console.log("PASS: actual browser storage, popup confirmation, native inputs/select/date/textarea, controlled state, existing-value protection, guided settings save, separate Personal/Work profiles, stale-preview invalidation, result restoration, and native pattern protection.");
+  assert.deepEqual(pageErrors, [], "The browser workflow must not raise uncaught page errors");
+  console.log("PASS: actual browser storage, popup confirmation, native inputs/select/date/textarea, controlled state, existing-value protection, draft preservation during delayed mapping replies, guided settings save, separate Personal/Work profiles, stale-preview invalidation, result restoration, and native pattern protection without uncaught page errors.");
 } finally {
   if (context) await context.close();
   server.closeAllConnections();

@@ -65,10 +65,14 @@ function matchFieldInternal(field, facts) {
 export function formatAddress(facts, scope) {
   const scoped = facts.filter((fact) => addressScope(fact) === scope && fact.value);
   const order = ["line1", "line2", "locality", "city", "region", "postal", "country"];
-  let selected = order.map((part) => scoped.find((fact) => addressPart(fact) === part)).filter(Boolean);
+  const components = order.map((part) => ({ part, facts: scoped.filter((fact) => addressPart(fact) === part) }));
+  const ambiguous = components.find((component) => component.facts.length > 1);
+  if (ambiguous) return { value: "", facts: [], ambiguousPart: ambiguous.part };
+  let selected = components.map((component) => component.facts[0]).filter(Boolean);
   if (!selected.length) {
-    const wholeAddress = scoped.find((fact) => new RegExp(`\\b${scope}\\s*address\\b`, "i").test(`${fact.key} ${fact.label}`));
-    if (wholeAddress) selected = [wholeAddress];
+    const wholeAddresses = scoped.filter((fact) => new RegExp(`\\b${scope}\\s*address\\b`, "i").test(`${fact.key} ${fact.label}`));
+    if (wholeAddresses.length > 1) return { value: "", facts: [], ambiguousPart: "address" };
+    selected = wholeAddresses;
   }
   return { value: selected.map((fact) => fact.value).join(", "), facts: selected };
 }
@@ -128,6 +132,7 @@ function matchAddress(field, facts, scope) {
     return proposal(matches[0].key, MATCH_STATUS.MATCHED, `Matches the ${scope} ${part} component; no other address parts were added.`);
   }
   const result = formatAddress(facts, scope);
+  if (result.ambiguousPart) return proposal(null, MATCH_STATUS.NEEDS_CHOICE, `More than one approved ${scope} ${result.ambiguousPart} fact is available; choose a source explicitly.`);
   if (!result.facts.length) return proposal(null, MATCH_STATUS.MISSING_VALUE, `No approved ${scope} address components are stored.`);
   const first = result.facts[0];
   return proposal(first.key, MATCH_STATUS.MATCHED, `Joined known ${scope} address components only.`, { composedKeys: result.facts.map((fact) => fact.key), composedValue: result.value });
@@ -158,6 +163,7 @@ function matchSelect(field, fact, evidence) {
   const target = normalizeAlias(fact.value);
   const matches = options.filter((option) => normalizeAlias(option.value) === target || normalizeAlias(option.label) === target);
   if (matches.length !== 1) return proposal(fact.key, MATCH_STATUS.NEEDS_CHOICE, matches.length ? "More than one native option matches this fact; choose explicitly." : "No native option exactly matches this approved fact. Choose a listed option explicitly.");
+  if (field.options.filter((option) => option.value === matches[0].value).length !== 1) return proposal(fact.key, MATCH_STATUS.NEEDS_CHOICE, "The matching native option shares its value with another option; it cannot be selected safely.");
   return proposal(fact.key, MATCH_STATUS.MATCHED, `Matches the single native option “${matches[0].label}”.`, { formattedValue: matches[0].value, optionLabel: matches[0].label });
 }
 function scopedEmailFacts(facts, kind) {

@@ -12,6 +12,10 @@ Reviewed and verified on 2026-10-02. Scope: the standalone extension, profile se
 - Native writes run through the browser prototype setter and input/change/blur events. Page handlers cannot silently erase a value while the extension reports it as retained. Verification rechecks earlier writes after later handlers run; background animation-frame suspension has a bounded fallback.
 - Before writing, a detached native control validates the value against type/pattern/range constraints. Changes to constraints, labels, form structure, URL, document, profile or field revision invalidate stale approval. Values are never silently truncated.
 - Preview readiness reflects usable values rather than selected unresolved rows. Failed scans clear stale displayed previews. Fill results survive popup closure for ten minutes without retaining filled values.
+- A delayed mapping or native-option acknowledgment preserves newer typed drafts, focus and cursor position. Confirmation flushes the captured draft rather than re-reading a replaced control.
+- Pending-preview writes and clears are serialized and check the workflow, token and revision. Cancellation cannot resurrect a preview through a delayed storage write, and stale writes cannot replace a newer scan.
+- Correction-rule reads and mutations share a queue. Clearing saved mappings stays effective when a delete, remembered mapping or sanitization write is already in progress.
+- Native option values must be unique across enabled and disabled options. Bounded group context retains sensitive instructions and changes beyond the old 240-character display limit. Composed addresses require an unambiguous source for every stored component and whole-address fallback.
 
 ## Useful optional inputs
 
@@ -33,6 +37,7 @@ All reusable inputs are optional. No actual user values were invented or added b
 - Keep public HTTPS requirements, no all-sites permission, no page-controlled API routes, no automatic submission, and exclusion of hidden, disabled, readonly, credential, identity, payment, signature, consent and upload controls.
 - Align saved-fact restrictions with sensitive field restrictions. Imported legacy sensitive facts do not enter autofill snapshots. Filtering uses metadata; it cannot classify arbitrary values disguised under harmless labels.
 - Maintain self-only script/resource CSP and the exact optional loopback API network permission. Optional requests omit cookies/cache, reject redirects, keep the ten-second deadline through body reading, stop at 4 MiB and validate bounded imported facts and profile lists. Untrusted API error text is not shown.
+- An HTTP 401 expires the rejected session even when its body is plain text. Token cleanup is serialized with login changes and checks the request's token and API origin, so an older rejected request cannot erase a newer login.
 - Restore result summaries without retaining filled values; expire them and pending profile snapshots after ten minutes. Document field-label/profile-name privacy, local data deletion and the destination site's access after filling.
 - Keep saved profiles unencrypted in browser storage, as explicitly requested. API keys remain session-only. No new analytics, cloud profile upload or runtime package was added.
 
@@ -42,9 +47,9 @@ The detailed data inventory is in [PRIVACY.md](PRIVACY.md). Reproduced security 
 
 | Check | Result |
 |---|---|
-| `npm test` | 118 passed, zero failures/skips |
-| `npm run test:browser` | PASS in isolated Edge: confirmation, native input/select/date/textarea and 250-option country list, controlled state, overwrite protection, guided saves, named Personal/Work separation, unsaved-edit cancellation, stale-preview invalidation, result restoration and pre-write pattern rejection |
-| `npm run test:security` | PASS in isolated Edge: actual content-script privilege and storage denial, world isolation, forged page messages, popup-tab rejection, CSP script/network blocking with zero collector requests, Settings embedding denial, markup rendering and focus-route substitution |
+| `npm test` | 138 passed, zero failures/skips; includes delayed preview writes/cancellation, correction-memory clear races, stale API failures/login changes, draft redraws, duplicate native values, long semantic context and ambiguous addresses |
+| `npm run test:browser` | PASS in isolated Edge: confirmation, native input/select/date/textarea and 250-option country list, controlled state, overwrite protection, typed-draft preservation through a delayed mapping acknowledgment, guided saves, named Personal/Work separation, unsaved-edit cancellation, stale-preview invalidation, result restoration and pre-write pattern rejection; no uncaught page errors |
+| `npm run test:security` | PASS in isolated Edge: actual content-script privilege and storage denial, world isolation, forged page messages, popup-tab rejection, CSP script/network blocking with zero collector requests, Settings embedding denial, markup rendering, focus-route substitution and disabled duplicate-option rejection |
 | `npm run evaluate` | Existing 100-case synthetic descriptor regression: 75 correct of 75 proposals; 75/78 source-backed cases covered. No benchmark regression. This is exposed authored data, not a real-site accuracy rate. |
 | `npm audit --json` | Zero known dependency advisories at review time; no guarantee that dependencies have no vulnerabilities |
 | Distribution check | ZIP includes manifest, extension assets and usage/privacy/audit documents only; CRC and source bytes checked; SHA-256 sidecar generated |

@@ -89,7 +89,17 @@ try {
   },tabId);
   assert.equal(navigationProbe.outcomes[0].status,"skipped");
   assert.equal(await page.locator("input").inputValue(),"");
-  console.log("PASS: real content-script privilege denial, local/session storage denial, world isolation, forged page messages, popup-tab rejection, CSP network/script blocking, Settings embedding denial, profile-markup injection denial, and focus-route substitution.");
+  // Native value setters can select a disabled duplicate before the enabled option.
+  await page.evaluate(()=>{
+    document.body.innerHTML='<label>Current study year<select name="study_year"><option value="">Choose</option><option value="Junior" disabled>Unavailable</option><option value="Junior">Junior</option></select></label>';
+  });
+  const duplicateOptionProbe=await worker.evaluate(async tabId=>{
+    const scan=await chrome.tabs.sendMessage(tabId,{type:"pluma/scan-page"});
+    return chrome.tabs.sendMessage(tabId,{type:"pluma/fill-approved",targetUrl:scan.documentUrl,expectedFields:scan.fields,items:[{fieldId:scan.fields[0].id,value:"Junior",overwrite:false,expected:scan.fields[0]}]});
+  },tabId);
+  assert.equal(duplicateOptionProbe.outcomes[0].status,"skipped");
+  assert.equal(await page.locator("select").inputValue(),"","Duplicate native option values must never be filled");
+  console.log("PASS: real content-script privilege denial, local/session storage denial, world isolation, forged page messages, popup-tab rejection, CSP network/script blocking, Settings embedding denial, profile-markup injection denial, focus-route substitution, and disabled duplicate-option protection.");
 }finally{
   if(context)await context.close();
   server.closeAllConnections();await new Promise(resolve=>server.close(resolve));

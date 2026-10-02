@@ -6,19 +6,35 @@ import { CONTACT_FIELDS, ALL_PROFILE_FIELDS, contactEditorFacts, removeEmptyCont
 import { MESSAGE, isMessageType } from "../extension/shared/contracts.js";
 
 class Element {
-  constructor() { this.children = []; this.dataset = {}; this.value = ""; }
-  append(...children) { this.children.push(...children); }
+  constructor(tag = "") { this.tagName = tag; this.children = []; this.dataset = {}; this.value = ""; }
+  append(...children) { for (const child of children) child.parentElement = this; this.children.push(...children); }
   addEventListener() {}
-  querySelectorAll() { return []; }
-  querySelector() { return null; }
-  replaceChildren(...children) { this.children = children; }
+  querySelectorAll(selector) {
+    const matches = (element) => selector.split(",").some((part) => {
+      part = part.trim();
+      if (part.startsWith(".")) return (element.className || "").split(" ").includes(part.slice(1));
+      const field = part.match(/^\[data-field-id="([^"]+)"\]$/);
+      return field ? element.dataset?.fieldId === field[1] : element.tagName === part;
+    });
+    return this.children.flatMap((child) => [...(matches(child) ? [child] : []), ...(child.querySelectorAll?.(selector) || [])]);
+  }
+  querySelector(selector) {
+    const separator = selector.indexOf(" ");
+    if (separator >= 0) return this.querySelector(selector.slice(0, separator))?.querySelector(selector.slice(separator + 1)) || null;
+    return this.querySelectorAll(selector)[0] || null;
+  }
+  replaceChildren(...children) { this.children = []; this.append(...children); }
+  replaceWith(replacement) { const parent = this.parentElement; replacement.parentElement = parent; parent.children[parent.children.indexOf(this)] = replacement; }
+  closest(selector) { for (let element = this; element; element = element.parentElement) if ((element.className || "").split(" ").includes(selector.slice(1))) return element; return null; }
+  focus() { this.focused = true; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   setAttribute() {}
 }
 function harness(file, sendMessage) {
   const elements = new Map();
   const context = vm.createContext({ CONTACT_FIELDS, ALL_PROFILE_FIELDS, contactEditorFacts, removeEmptyContactFacts, MESSAGE, isMessageType, console, setTimeout, clearTimeout, CSS: { escape: (value) => value },
     chrome: { runtime: { sendMessage } }, Option: class extends Element { constructor(text, value) { super(); this.text = text; this.value = value; } },
-    document: { querySelector(selector) { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); }, createTextNode(text) { return {textContent:text}; }, createElement(tag) { const element = new Element(); if (tag === "textarea") Object.defineProperty(element, "type", { get() { return "textarea"; } }); return element; } }
+    document: { querySelector(selector) { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); }, createTextNode(text) { return {textContent:text}; }, createElement(tag) { const element = new Element(tag); if (tag === "textarea") Object.defineProperty(element, "type", { get() { return "textarea"; } }); return element; } }
   });
   const source = fs.readFileSync(new URL(`../extension/${file}`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace("void initialize();", "").replace("void loadPendingPreview();", "").replace("void initializePopup();", "");
   vm.runInContext('"use strict";\n' + source, context);
@@ -140,4 +156,71 @@ test("unresolved selected rows do not count as ready or enable confirmation", ()
   vm.runInContext('currentPreview={rows:[{include:true,status:"needs choice",field:{eligible:true},value:""}]}; updateSelectionSummary(); setBusy(false);',ctx);
   assert.equal(vm.runInContext('document.querySelector("#approve").disabled',ctx),true);
   assert.match(vm.runInContext('document.querySelector("#summary").textContent',ctx),/0 fields ready/);
+});
+
+function setupPopupRow(ctx, kind = "input") {
+  ctx.row = {fieldId:"field-1",field:{eligible:true,kind,label:"Contact",options:[{value:"old",label:"Old"},{value:"new",label:"New"}]},status:"matched",include:true,value:"old"};
+  vm.runInContext('currentPreview={previewToken:"draft",previewRevision:0,profile:{},rows:[row],factOptions:[]}; rows.append(createRow(row,currentPreview.profile));',ctx);
+}
+
+test("a delayed mapping redraw preserves a newer typed answer and its cursor before confirmation", async () => {
+  let finishMapping;
+  const messages = [];
+  const ctx = harness("popup.js", message => {
+    messages.push(message);
+    if (messages.length === 1) return new Promise(resolve => { finishMapping = resolve; });
+    if (message.type === MESSAGE.APPROVE_AND_FILL) return Promise.resolve({type:MESSAGE.WORKFLOW_ERROR,error:"Synthetic fill stopped"});
+    return Promise.resolve({type:MESSAGE.UPDATE_PREVIEW,previewToken:"draft",previewRevision:2,row:{...ctx.row,value:message.changes.valueOverride}});
+  });
+  setupPopupRow(ctx);
+  vm.runInContext('sendChange("field-1",{profileKey:"email"},true);',ctx);
+  await new Promise(resolve => setTimeout(resolve,0));
+  vm.runInContext('const editor=rows.querySelector("textarea"); editor.value="My typed answer"; editor.selectionStart=3; editor.selectionEnd=7; document.activeElement=editor; scheduleValue("field-1",editor.value);',ctx);
+  finishMapping({type:MESSAGE.UPDATE_PREVIEW,previewToken:"draft",previewRevision:1,row:{...ctx.row,value:"Mapped profile answer"}});
+  await vm.runInContext('updateQueue',ctx);
+  assert.equal(vm.runInContext('rows.querySelector("textarea").value',ctx),"My typed answer");
+  assert.equal(vm.runInContext('rows.querySelector("textarea").focused',ctx),true);
+  assert.equal(vm.runInContext('rows.querySelector("textarea").selectionStart',ctx),3);
+  assert.equal(vm.runInContext('rows.querySelector("textarea").selectionEnd',ctx),7);
+  await vm.runInContext('approve()',ctx);
+  assert.equal(messages[1].changes.valueOverride,"My typed answer");
+  assert.equal(messages[2].type,MESSAGE.APPROVE_AND_FILL);
+  assert.equal(messages[2].previewRevision,2);
+});
+
+test("a native option acknowledgement preserves the newer queued choice during redraw", async () => {
+  let finishEarlier;
+  let finishNewer;
+  const messages = [];
+  const ctx = harness("popup.js", message => {
+    messages.push(message);
+    return new Promise(resolve => { if (messages.length === 1) finishEarlier = resolve; else finishNewer = resolve; });
+  });
+  setupPopupRow(ctx,"select");
+  vm.runInContext('sendChange("field-1",{valueOverride:"old"},true);',ctx);
+  await new Promise(resolve => setTimeout(resolve,0));
+  vm.runInContext('rows.querySelectorAll("select")[1].value="new"; sendChange("field-1",{valueOverride:"new"},true);',ctx);
+  finishEarlier({type:MESSAGE.UPDATE_PREVIEW,previewToken:"draft",previewRevision:1,row:{...ctx.row,value:"old"}});
+  await new Promise(resolve => setTimeout(resolve,0));
+  assert.equal(vm.runInContext('rows.querySelectorAll("select")[1].value',ctx),"new");
+  assert.equal(messages[1].changes.valueOverride,"new");
+  finishNewer({type:MESSAGE.UPDATE_PREVIEW,previewToken:"draft",previewRevision:2,row:{...ctx.row,value:"new"}});
+  await vm.runInContext('updateQueue',ctx);
+  assert.equal(vm.runInContext('rows.querySelectorAll("select")[1].value',ctx),"new");
+});
+
+test("a failed cancellation keeps an unsent typed answer for a later confirmation", async () => {
+  const messages = [];
+  const ctx = harness("popup.js", async message => {
+    messages.push(message);
+    if (message.type !== MESSAGE.UPDATE_PREVIEW) return {type:MESSAGE.WORKFLOW_ERROR,error:"Synthetic request rejected"};
+    return {type:MESSAGE.UPDATE_PREVIEW,previewToken:"draft",previewRevision:1,row:{...ctx.row,value:message.changes.valueOverride}};
+  });
+  setupPopupRow(ctx);
+  vm.runInContext('rows.querySelector("textarea").value="Keep my answer"; scheduleValue("field-1","Keep my answer");',ctx);
+  await vm.runInContext('cancelPreview()',ctx);
+  await vm.runInContext('approve()',ctx);
+  assert.equal(messages[1].type,MESSAGE.UPDATE_PREVIEW);
+  assert.equal(messages[1].changes.valueOverride,"Keep my answer");
+  assert.equal(messages[2].type,MESSAGE.APPROVE_AND_FILL);
 });

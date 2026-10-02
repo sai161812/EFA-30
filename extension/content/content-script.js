@@ -166,7 +166,7 @@
       if (value && !ancestors.includes(value)) ancestors.push(value);
     }
     labels.push(...ancestors.reverse());
-    return [...new Set(labels)].join(" · ").slice(0, 240);
+    return [...new Set(labels)].join(" · ").slice(0, 4001);
   }
 
   function readReferencedText(element, attribute) {
@@ -270,7 +270,7 @@
         outcomes.push(outcome(item.fieldId, "skipped", "The field already has a value; overwrite was not approved."));
         continue;
       }
-      if (isNativeSelect(element) && (!current.options.some((option) => option.value === item.value && !option.disabled) || current.options.filter((option) => option.value === item.value && !option.disabled).length !== 1)) {
+      if (isNativeSelect(element) && (!current.options.some((option) => option.value === item.value && !option.disabled) || current.options.filter((option) => option.value === item.value).length !== 1)) {
         outcomes.push(outcome(item.fieldId, "skipped", "The approved option is no longer a unique enabled choice."));
         continue;
       }
