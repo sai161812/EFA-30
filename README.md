@@ -1,6 +1,6 @@
 # EFA-30
 
-A standalone browser autofill extension. Save your own details locally, review suggestions, and approve the fields to fill. PLUMA and POD-16 are not required for normal use.
+A standalone browser autofill extension. Save your own details locally, review suggestions, and confirm once to fill matching empty fields. PLUMA and POD-16 are not required for normal use.
 
 ## Start here
 
@@ -37,7 +37,7 @@ Set-Location 'D:\Workspace\DEVEL\EFA-30'
 py -m http.server 8001 --directory fixture
 ```
 
-Keep the terminal open. In Chrome or Edge, open `http://localhost:8001/`, select the extension, then **Scan this page**. The popup shows the origin, selected profile and fact source, field label/context, value, matching reason and status. In the internship scenario, select one of the approved project snapshots, leave the motivation question unanswered or enter your own per-fill answer, review the team-leader email which is intentionally unresolved, and approve the unambiguous “Junior” native select. Expected graduation date stays unresolved because the fictional profile stores only a year. No form action is triggered. Rows start unchecked; nothing is inserted until **Fill selected fields**. Existing page text is not disclosed, and replacing any prefilled entry requires that field's separate overwrite approval.
+Keep the terminal open. In Chrome or Edge, open `http://localhost:8001/`, select the extension, then **Scan this page**. The popup shows the origin, selected profile and fact source, field label/context, value, matching reason and status. In the internship scenario, select one of the approved project snapshots, leave the motivation question unanswered or enter your own per-fill answer, review the team-leader email which is intentionally unresolved, and approve the unambiguous “Junior” native select. Expected graduation date stays unresolved because the fictional profile stores only a year. No form action is triggered. Clear matches for empty fields are ready automatically; nothing is inserted until **Confirm and fill**. Existing page text is not disclosed, and replacing any prefilled entry requires that field's separate overwrite approval.
 
 Stop the fixture server with `Ctrl+C`. If `py` is unavailable, run `python -m http.server 8001 --directory fixture`.
 
@@ -45,7 +45,7 @@ Stop the fixture server with `Ctrl+C`. If `py` is unavailable, run `python -m ht
 
 - The extension requests `activeTab`, `scripting`, `storage`, `alarms` and the single optional host pattern `http://127.0.0.1:8000/*`; it has no all-sites permission. A different deployment needs its exact origin declared in the manifest before reload.
 - Pending profile data and approval choices live in `chrome.storage.session`, available only to trusted extension contexts, and expire after ten minutes. Cancel/fill completion clears the preview. Browser restart clears the session and requires sign-in again.
-- Corrected mappings are remembered only when you opt in. A rule stores the exact website origin, hashed page/form and semantic fingerprints, control kind/type, selected profile/backend identity, fact key/metadata fingerprint and rule version. It stores no entered/filled values, credentials or HTML. Reused mappings are suggestions only, remain unchecked for filling, and are rejected when the form meaning, context, type or required profile fact changes. Inspect, edit, delete or clear rules in Settings.
+- Corrected mappings are remembered only when you opt in. A rule stores the exact website origin, hashed page/form and semantic fingerprints, control kind/type, selected profile/backend identity, fact key/metadata fingerprint and rule version. It stores no entered/filled values, credentials or HTML. Reused mappings are suggestions only, are ready automatically when unambiguous and the target is empty, and are rejected when the form meaning, context, type or required profile fact changes. Inspect, edit, delete or clear rules in Settings.
 - API keys never enter local/sync storage, page messages or content scripts. The service worker has fixed profile-only routes; the content script cannot request profile data or approve a fill.
 - Profile data is re-read from POD-16 before scanning and revalidated by identity, backend, version and current facts immediately before filling. API outage, expired authentication or version change clears the preview and requires a fresh session/review.
 - The content script returns field descriptors and existing-value presence only. It receives selected values only in the final approved request for the recorded tab/document.
@@ -66,7 +66,7 @@ For browser and live API verification:
 1. Load unpacked and confirm there are no manifest or service-worker errors.
 2. Start POD-16, create a synthetic profile client with only `autofill:profiles:read`, and connect in extension Settings to `http://127.0.0.1:8000`. Create profiles and add synthetic facts with both read and manage scopes.
 3. Start the fixture on port 8001, scan `http://localhost:8001/`, and check that the selected POD-16 fact, source and match reason appear. Disconnect POD-16 and rescan; confirm an API error and no fictional fallback.
-4. Leave all fields unchecked and approve; confirm nothing is written. Select one field and approve it. Confirm the prefilled entry is skipped until its overwrite checkbox is separately selected.
+4. Scan and confirm once; check that matching empty fields are filled without selecting them. Deselect all fields and confirm that nothing is written. Confirm the prefilled entry is skipped until its overwrite checkbox is separately selected.
 5. With a second API client, change the selected profile after preview and approve. Confirm the old preview is rejected. Try reading projects, notes and `/v1/profile` with the read-only profile key; each must be denied.
 6. Sign out, restart the browser, and test an expired/revoked API key. Each requires fresh sign-in and blocks filling.
 7. Scan `http://localhost:8001/react-controlled.html`; approve Email, blur it, then activate **Read React state** and check the retained controlled value.
@@ -74,7 +74,7 @@ For browser and live API verification:
 9. On the internship fixture, verify Team leader email needs a choice, choose one project snapshot and check its source, leave motivation unanswered, approve the unique Junior option, and confirm expected graduation date remains unresolved because only 2027 is stored.
 10. Click **Show additional application details**, scan again and confirm the current address appears in the fresh preview without the extension navigating the form.
 11. Open `http://localhost:8001/native-controls.html`, click **Run native controls check**, and confirm it reports PASS for the retained native select/date values and their input/change events.
-12. Correct a profile mapping in the preview, leave **Remember this mapping for this website and form** unchecked, then scan again and confirm no memory suggestion appears. Opt in on a correction and repeat: confirm the selected fact is suggested but not included, then change the label, section, type, origin or profile fact key and confirm the suggestion is rejected. Inspect and delete the rule in Settings.
+12. Correct a profile mapping in the preview, leave **Remember this mapping for this website and form** unchecked, then scan again and confirm no memory suggestion appears. Opt in on a correction and repeat: confirm the selected fact is ready for confirmation when the target is empty, then change the label, section, type, origin or profile fact key and confirm the suggestion is rejected. Inspect and delete the rule in Settings.
 
 Automated extension checks cover content-script native select/date fill and revalidation. A browser-native setter/event check is provided at `/native-controls.html`. Full popup interaction and live POD-16 testing require a manual Chrome/Edge session; use the steps above for those checks. The React fixture is separate from the extension UI and loads React only for its controlled-form test.
 

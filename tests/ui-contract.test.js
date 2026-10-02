@@ -95,39 +95,3 @@ test("failed saves keep the editor available for retry", async () => {
   assert.equal(vm.runInContext('savingProfile', ctx), false);
   assert.equal(vm.runInContext('document.querySelector("#save-profile").disabled', ctx), false);
 });
-
-
-test("bulk selection chooses only ready empty fields and never authorizes a fill", async () => {
-  const messages = [];
-  const ctx = harness("popup.js", async (message) => {
-    messages.push(message);
-    return {type:MESSAGE.UPDATE_PREVIEW,previewToken:"bulk",previewRevision:message.previewRevision+1,row:{fieldId:message.fieldId,field:{eligible:true,hasValue:false},status:"matched",value:"Approved",include:true}};
-  });
-  await vm.runInContext(`(async () => {
-    renderPreview = () => {};
-    currentPreview = {previewToken:"bulk",previewRevision:0,rows:[
-      {fieldId:"ready",field:{eligible:true,hasValue:false},status:"matched",value:"Approved",include:false},
-      {fieldId:"existing",field:{eligible:true,hasValue:true},status:"matched",value:"Approved",include:false},
-      {fieldId:"ambiguous",field:{eligible:true,hasValue:false},status:"needs choice",value:"",include:false},
-      {fieldId:"blocked",field:{eligible:false,hasValue:false},status:"matched",value:"Approved",include:false}
-    ]};
-    await selectSuggested();
-  })()`, ctx);
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].fieldId, "ready");
-  assert.equal(messages[0].type, MESSAGE.UPDATE_PREVIEW);
-  assert.deepEqual(JSON.parse(JSON.stringify(messages[0].changes)), {include:true});
-});
-
-test("bulk selection stops on failure and blocks subsequent approval", async () => {
-  const messages = [];
-  const ctx = harness("popup.js", async (message) => { messages.push(message); return {type:MESSAGE.WORKFLOW_ERROR,error:"Preview expired"}; });
-  await vm.runInContext(`(async () => {
-    currentPreview = {previewToken:"expired",previewRevision:0,rows:["a","b"].map(fieldId => ({fieldId,field:{eligible:true,hasValue:false},status:"matched",value:"Approved",include:false}))};
-    await selectSuggested();
-    await approve();
-  })()`, ctx);
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].type, MESSAGE.UPDATE_PREVIEW);
-  assert.equal(vm.runInContext('isBusy', ctx), false);
-});

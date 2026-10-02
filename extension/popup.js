@@ -13,7 +13,6 @@ document.querySelector("#scan").addEventListener("click", scan);
 document.querySelector("#approve").addEventListener("click", approve);
 document.querySelector("#cancel").addEventListener("click", cancelPreview);
 document.querySelector("#settings").addEventListener("click", () => chrome.runtime.openOptionsPage());
-document.querySelector("#select-suggested").addEventListener("click", selectSuggested);
 void loadPendingPreview();
 
 async function loadPendingPreview() {
@@ -39,23 +38,8 @@ async function scan() {
     const response = await chrome.runtime.sendMessage({ type: MESSAGE.SCAN_ACTIVE_TAB });
     if (handleError(response)) return;
     renderPreview(response);
-    setStatus(`Scanned ${response.target.origin}. Review each row and select values before filling.`);
+    setStatus(`Scanned ${response.target.origin}. Your matched details are ready. Click Confirm and fill.`);
   } catch (error) { setStatus(error?.message || "The page could not be scanned."); } finally { scanButton.textContent = "Scan this page"; setBusy(false); }
-}
-
-async function selectSuggested() {
-  if (isBusy || !currentPreview) return;
-  setBusy(true);
-  try {
-    await flushValueUpdates();
-    for (const row of currentPreview.rows.filter((row) => row.field.eligible && row.status === "matched" && row.value && !row.field.hasValue && !row.include)) {
-      await enqueueUpdate(row.fieldId, { include: true });
-      if (updateError) throw updateError;
-    }
-    renderPreview(currentPreview);
-    setStatus("Review the selected values, then click Fill selected fields.");
-  } catch (error) { setStatus(error.message || "Could not select suggestions. Scan again."); }
-  finally { setBusy(false); }
 }
 
 async function approve() {
@@ -334,15 +318,14 @@ function handleError(response) {
 
 function updateSelectionSummary() {
   const selected = currentPreview?.rows.filter((row) => row.include).length || 0;
-  const available = currentPreview?.rows.filter((row) => row.field.eligible && row.status === "matched" && row.value).length || 0;
-  document.querySelector("#summary").textContent = `${available} suggestions. ${selected} selected.`;
-  document.querySelector("#approve").textContent = selected ? `Fill ${selected} selected field${selected === 1 ? "" : "s"}` : "Fill selected fields";
+  const needsInput = currentPreview?.rows.filter((row) => row.field.eligible && row.status !== "matched").length || 0;
+  document.querySelector("#summary").textContent = `${selected} fields ready to fill. ${needsInput ? `${needsInput} fields need your input.` : "Review your details, then confirm."}`;
+  document.querySelector("#approve").textContent = selected ? `Confirm and fill ${selected} field${selected === 1 ? "" : "s"}` : "Confirm and fill";
 }
 
 function setBusy(value) {
   isBusy = value;
   document.querySelector("#scan").disabled = value;
-  document.querySelector("#select-suggested").disabled = value || Boolean(currentPreview?.filling);
   document.querySelector("#approve").disabled = value || Boolean(currentPreview?.filling);
   document.querySelector("#cancel").disabled = value;
   rows.querySelectorAll("input, select, textarea").forEach((control) => {

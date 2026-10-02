@@ -68,13 +68,13 @@ function send(runtime, message, sender = popupSender) {
   });
 }
 
-test("preview is session-persisted, unapproved by default, document-bound and explicitly cleared on cancel", async () => {
+test("preview is session-persisted, ready but unfilled by default, document-bound and explicitly cleared on cancel", async () => {
   const runtime = makeRuntime();
   await loadWorker(runtime, "session-test");
   const scanned = await send(runtime, { type: "pluma/scan-active-tab" });
   assert.equal(scanned.target.origin, "http://localhost:8000");
   assert.equal(scanned.target.documentId, "document-a");
-  assert.equal(scanned.rows[0].include, false);
+  assert.equal(scanned.rows[0].include, true);
   assert.equal(runtime.stored.pendingPreview.tabId, 7);
   assert.equal(runtime.stored.pendingPreview.documentId, "document-a");
   assert.ok(runtime.stored.pendingPreview.expiresAt > Date.now());
@@ -85,8 +85,7 @@ test("preview is session-persisted, unapproved by default, document-bound and ex
   const afterRestart = await send(runtime, { type: "pluma/get-preview" });
   assert.equal(afterRestart.pending, true, "a restarted service worker restores the pending preview from session storage");
 
-  const unapproved = await send(runtime, { type: "pluma/approve-and-fill" });
-  assert.equal(unapproved.type, "pluma/workflow-error");
+  assert.equal(afterRestart.rows[0].include, true);
   assert.equal(runtime.calls.fills, 0);
   await send(runtime, { type: "pluma/cancel-preview" });
   assert.equal(runtime.stored.pendingPreview, undefined);
@@ -96,7 +95,6 @@ test("approval only sends selected values to the scanned document and never foll
   const runtime = makeRuntime();
   await loadWorker(runtime, "approved-test");
   await send(runtime, { type: "pluma/scan-active-tab" });
-  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: true } });
   const result = await send(runtime, { type: "pluma/approve-and-fill" });
   assert.equal(result.outcomes[0].status, "filled");
   assert.equal(runtime.calls.lastFillTarget.tabId, 7);
@@ -308,9 +306,10 @@ test("remembered mappings are scoped suggestions, store no values, and reject st
   assert.equal(repeated.rows[0].profileKey, "personalEmail");
   assert.equal(repeated.rows[0].remembered, true);
   assert.match(repeated.rows[0].reason, /Remembered mapping suggestion/);
-  assert.equal(repeated.rows[0].include, false);
-  assert.equal((await send(runtime, { type: "pluma/approve-and-fill" })).type, "pluma/workflow-error");
-  assert.equal(runtime.calls.fills, 0);
+  assert.equal(repeated.rows[0].include, true);
+  assert.equal(runtime.calls.fills, 0, "Remembered matches wait for confirmation");
+  assert.equal((await send(runtime, { type: "pluma/approve-and-fill" })).type, "pluma/fill-result");
+  assert.equal(runtime.calls.fills, 1);
 
   const settings = settingsSender;
   const listed = await send(runtime, { type: "pluma/memory-list" }, settings);
@@ -549,7 +548,7 @@ test("local real profiles persist, require explicit selection and approval, and 
   await settings({ type: "pluma/api-select-profile", profileId });
   const preview = await send(runtime, { type: "pluma/scan-active-tab" });
   assert.equal(preview.profile.source, "local");
-  assert.equal(preview.rows[0].include, false);
+  assert.equal(preview.rows[0].include, true);
   assert.equal(runtime.calls.fills, 0);
   await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: true } });
   await send(runtime, { type: "pluma/approve-and-fill" });
@@ -575,4 +574,38 @@ test("page senders cannot enable or delete local profiles", async () => {
     assert.equal(result.type, "pluma/workflow-error");
   }
   assert.equal(runtime.stored["local:profileApiSettings"], undefined);
+});
+
+
+test("one confirmation fills clear empty matches while unresolved and prefilled fields stay untouched", async () => {
+  const runtime = makeRuntime();
+  await loadWorker(runtime, "automatic-confirmation");
+  const initial = await send(runtime, { type: "pluma/scan-active-tab" });
+  const base = initial.rows[0].field;
+  runtime.setFields([
+    { ...base, id: "ready" },
+    { ...base, id: "existing", hasValue: true },
+    { ...base, id: "unknown", label: "Unrecognized detail", autocomplete: "", name: "unknown" },
+    { ...base, id: "blocked", eligible: false, unsupportedReason: "Unsupported" }
+  ]);
+  const preview = await send(runtime, { type: "pluma/scan-active-tab" });
+  assert.deepEqual(preview.rows.map(row => row.include), [true, false, false, false]);
+  assert.equal(runtime.calls.fills, 0);
+  const restored = await send(runtime, { type: "pluma/get-preview" });
+  assert.deepEqual(restored.rows.map(row => row.include), [true, false, false, false]);
+  const result = await send(runtime, { type: "pluma/approve-and-fill" });
+  assert.equal(result.type, "pluma/fill-result");
+  assert.deepEqual(runtime.calls.lastFillTarget.items.map(item => item.fieldId), ["ready"]);
+  assert.equal(result.outcomes.filter(item => item.status === "filled").length, 1);
+});
+
+test("excluding an automatic match survives restoration and prevents filling", async () => {
+  const runtime = makeRuntime();
+  await loadWorker(runtime, "automatic-exclusion");
+  await send(runtime, { type: "pluma/scan-active-tab" });
+  await send(runtime, { type: "pluma/update-preview", fieldId: "field-1", changes: { include: false } });
+  const restored = await send(runtime, { type: "pluma/get-preview" });
+  assert.equal(restored.rows[0].include, false);
+  assert.equal((await send(runtime, { type: "pluma/approve-and-fill" })).type, "pluma/workflow-error");
+  assert.equal(runtime.calls.fills, 0);
 });

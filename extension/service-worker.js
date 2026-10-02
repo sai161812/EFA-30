@@ -467,6 +467,12 @@ async function scanActiveTab() {
         rememberMapping: false, valueOverride: null, include: false, overwrite: false };
     }))
   };
+  // Prepare clear matches automatically; the confirmation remains the only fill authority.
+  for (const row of pending.rows) {
+    const field = pending.fields.find((item) => item.id === row.fieldId);
+    const view = previewRow(row, field, pending.facts);
+    row.include = Boolean(field.eligible && !field.hasValue && view.status === MATCH_STATUS.MATCHED && view.value);
+  }
   pending.scanAndMatchMs = Math.round((performance.now() - scanStartedAt) * 100) / 100;
   pending.profileApiMs = profile.profileApiMs ?? null;
   if (epoch !== workflowEpoch) throw new Error("The scan was superseded or cancelled. Scan again.");
