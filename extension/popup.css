@@ -45,3 +45,6 @@ summary:focus-visible { outline: 3px solid #f1a900; outline-offset: 2px; }
 .scan-details { margin-bottom: 4px; }
 .actions { position: sticky; bottom: -16px; background: #fff; padding: 10px 0 16px; border-top: 1px solid #d4dce3; }
 .actions .secondary { margin-top: 0; min-height: 30px; padding: 4px 10px; }
+
+#fill-profile { margin: 4px 0; }
+#profile-help { margin-bottom: 10px; }

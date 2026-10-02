@@ -6,6 +6,7 @@ import { normalizeApiOrigin, requestProfileApi, validateProfile, validateProfile
 
 const EXTENSION_ORIGIN = `chrome-extension://${chrome.runtime.id}/`;
 const SESSION_KEY = "pendingPreview";
+const RESULT_KEY = "lastFillResult";
 const PREVIEW_TTL_MS = 10 * 60 * 1000;
 const API_SETTINGS_KEY = "profileApiSettings";
 const API_TOKEN_KEY = "profileApiToken";
@@ -16,8 +17,10 @@ let workflowEpoch = 0;
 let previewUpdates = Promise.resolve();
 let activeFillToken = null;
 const EXPIRY_ALARM = "preview-expiry";
+const RESULT_ALARM = "fill-result-expiry";
 chrome.alarms.onAlarm.addListener(async ({ name }) => {
   if (name === EXPIRY_ALARM) await loadPending().catch(() => {});
+  if (name === RESULT_ALARM) await loadFillResult().catch(() => {});
 });
 void sessionReady.then(async () => {
   const saved = await chrome.storage.session.get(SESSION_KEY);
@@ -56,6 +59,7 @@ function isActiveTopLevel(sender) {
 async function dispatchProfileApi(message) {
   validateSettingsMessage(message);
   if ([MESSAGE.LOCAL_PROFILE_ENABLE, MESSAGE.LOCAL_PROFILE_DELETE, MESSAGE.API_CONFIGURE, MESSAGE.API_LOGIN, MESSAGE.API_LOGOUT, MESSAGE.API_SELECT_PROFILE, MESSAGE.API_CREATE_PROFILE, MESSAGE.API_UPDATE_PROFILE, MESSAGE.DEV_PROFILE_SET].includes(message.type)) await clearPending();
+  if (![MESSAGE.API_STATUS,MESSAGE.API_LIST_PROFILES,MESSAGE.API_READ_PROFILE].includes(message.type)) await clearFillResult();
   const local = await chrome.storage.local.get(API_SETTINGS_KEY);
   const settings = local[API_SETTINGS_KEY] || { origin: "", selectedProfileId: "" };
   const session = await chrome.storage.session.get(API_TOKEN_KEY);
@@ -141,7 +145,8 @@ async function dispatchLocalProfile(message, settings) {
   if (message.type === MESSAGE.API_LIST_PROFILES) return { type: message.type, profiles: profiles.map(({ id, name, profile_type, version }) => ({ id, name, profile_type, version })) };
   if (message.type === MESSAGE.API_CREATE_PROFILE) {
     validateProfileWrite(message.profile, true);
-    if (profiles.some((item) => item.profile_type === message.profile.profile_type)) throw new Error("A local profile of this type already exists. Select it to edit its facts.");
+    if (profiles.length >= 50) throw new Error("You can keep up to 50 local profiles. Delete an unused profile before creating another.");
+    if (profiles.some(item => item.profile_type === message.profile.profile_type && item.name.trim().toLowerCase() === message.profile.name.trim().toLowerCase())) throw new Error("Use a distinct name for each profile in this category.");
     const raw = { ...message.profile, id: crypto.randomUUID(), version: 1, updated_at: new Date().toISOString() };
     profiles.push(raw);
     await chrome.storage.local.set({ localProfiles: profiles });
@@ -165,6 +170,7 @@ async function dispatchLocalProfile(message, settings) {
     validateProfileWrite(message.profile, false);
     if (profiles[index].version !== message.profile.expected_version) throw new Error("This local profile changed. Reload Settings before saving.");
     const { name, facts } = message.profile;
+    if (profiles.some((item, position) => position !== index && item.profile_type === profiles[index].profile_type && item.name.trim().toLowerCase() === name.trim().toLowerCase())) throw new Error("Use a distinct name for each profile in this category.");
     const updated_at = new Date().toISOString();
     profiles[index] = { ...profiles[index], name, facts: facts.map((fact) => ({ ...fact, updated_at })), version: profiles[index].version + 1, updated_at };
     await chrome.storage.local.set({ localProfiles: profiles });
@@ -424,8 +430,28 @@ async function dispatch(message) {
     return action;
   }
   if ([MESSAGE.MEMORY_LIST, MESSAGE.MEMORY_EDIT, MESSAGE.MEMORY_DELETE, MESSAGE.MEMORY_CLEAR].includes(message.type)) return dispatchMemory(message);
+  if (message.type === MESSAGE.GET_FILL_PROFILES) {
+    if (Object.keys(message).some(key => key !== "type")) throw new Error("Invalid profile-list request.");
+    const state = await dispatchProfileApi({type:MESSAGE.API_STATUS});
+    if (state.localMode || state.authenticated) {
+      const list = await dispatchProfileApi({type:MESSAGE.API_LIST_PROFILES});
+      return {type:message.type, profiles:list.profiles, selectedProfileId:state.selectedProfileId, source:state.localMode ? "local" : "pod16"};
+    }
+    return {type:message.type, profiles:state.developmentProfileEnabled ? [{id:DEVELOPMENT_PROFILE.id,name:DEVELOPMENT_PROFILE.name,profile_type:"professional"}] : [], selectedProfileId:state.developmentProfileEnabled ? DEVELOPMENT_PROFILE.id : "", source:state.developmentProfileEnabled ? "development" : "none"};
+  }
+  if (message.type === MESSAGE.SELECT_FILL_PROFILE) {
+    if (Object.keys(message).some(key => !["type","profileId"].includes(key))) throw new Error("Invalid profile selection.");
+    if (activeFillToken) throw new Error("Wait for the current fill to finish before changing profiles.");
+    const action = profileActions.then(() => dispatchProfileApi({type:MESSAGE.API_SELECT_PROFILE,profileId:message.profileId}));
+    profileActions = action.catch(() => {});
+    await action;
+    return {type:message.type,profileId:message.profileId};
+  }
   if (message.type === MESSAGE.SCAN_ACTIVE_TAB) return scanActiveTab();
-  if (message.type === MESSAGE.GET_PREVIEW) return previewResponse(await loadPending());
+  if (message.type === MESSAGE.GET_PREVIEW) {
+    const pending = await loadPending();
+    return pending ? previewResponse(pending) : {...previewResponse(null), lastFillResult:await loadFillResult()};
+  }
   if (message.type === MESSAGE.UPDATE_PREVIEW) {
     const update = previewUpdates.then(() => updatePreview(message));
     previewUpdates = update.catch(() => {});
@@ -444,6 +470,7 @@ async function dispatch(message) {
 async function scanActiveTab() {
   const epoch = ++workflowEpoch;
   await chrome.storage.session.remove(SESSION_KEY);
+  await clearFillResult();
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id || !tab.url) throw new Error("No active page is available to scan.");
   if (!/^https?:\/\//i.test(tab.url)) throw new Error("This browser page is restricted. Open a regular HTTP or HTTPS page.");
@@ -476,7 +503,7 @@ async function scanActiveTab() {
         suggestionStatus: suggestion.status, suggestionReason: suggestion.reason, directAnswer: Boolean(suggestion.directAnswer), projectChoice: Boolean(suggestion.projectChoice), mappingChanged: false,
         rememberedRuleId: remembered?.id || null, memoryStatus: remembered ? "suggested" : stale ? "rejected" : "",
         memoryReason: remembered ? "Remembered mapping suggestion from this website and form. Review it and approve any fill." : stale ? "A remembered mapping was rejected because its rule version, page/source identity, field meaning or available profile facts are incompatible. Review the mapping." : "",
-        rememberMapping: false, valueOverride: null, include: false, overwrite: false };
+        rememberMapping: false, valueOverride: null, include: false, includeChanged: false, overwrite: false };
     }))
   };
   // Prepare clear matches automatically; the confirmation remains the only fill authority.
@@ -537,10 +564,15 @@ async function updatePreview(message) {
   } else if (key === "include") {
     if (typeof value !== "boolean" || (value && !field.eligible)) throw new Error("Unsupported fields cannot be selected.");
     row.include = value;
+    row.includeChanged = true;
   } else if (key === "overwrite") {
     if (typeof value !== "boolean" || (value && !field.hasValue)) throw new Error("Overwrite approval is available only for fields that already contain a value.");
     row.overwrite = value;
   } else throw new Error("This preview change is not allowed.");
+  if (["profileKey", "valueOverride", "overwrite"].includes(key) && !row.includeChanged) {
+    const view = previewRow(row, field, pending.facts);
+    row.include = Boolean(field.eligible && view.status === MATCH_STATUS.MATCHED && view.value && (!field.hasValue || row.overwrite));
+  }
   await assertCurrentPreview(pending);
   pending.revision += 1;
   await savePending(pending);
@@ -589,6 +621,10 @@ function previewRow(row, field, facts) {
     status = row.valueOverride ? MATCH_STATUS.MATCHED : MATCH_STATUS.MISSING_VALUE;
     reason = row.valueOverride ? (row.directAnswer ? "Answer supplied by you for this fill only; it will not be saved to the profile." : "Value edited by you for this fill only; it will not be saved to the profile.") : "The per-fill value is empty.";
     source = row.directAnswer ? "Direct answer supplied for this fill" : "Edited for this fill";
+  }
+  if (field.eligible && value && (value.length > 4000 || (Number.isInteger(field.maxLength) && field.maxLength >= 0 && value.length > field.maxLength))) {
+    status = MATCH_STATUS.NEEDS_CHOICE;
+    reason = "This value exceeds the field's supported character limit. Edit it before confirming; it will not be truncated.";
   }
   const option = field.kind === "select" ? (field.options || []).find((item) => item.value === value && !item.disabled) : null;
   return {
@@ -665,8 +701,11 @@ async function performApprovedFill(pending) {
     if (!isMessageType(result, MESSAGE.FILL_RESULT) || !validOutcomes(result.outcomes, valid)) {
       throw new Error("The target document did not confirm every field. Some fields may have been filled; review the form manually before trying again.");
     }
+    const completed = {type:MESSAGE.FILL_RESULT,origin:pending.origin,profileName:pending.profileName,outcomes:[...outcomes,...result.outcomes].map(item => ({...item,fieldLabel:pending.fields.find(field => field.id === item.fieldId)?.label || item.fieldId}))};
+    await chrome.storage.session.set({[RESULT_KEY]:{...completed,expiresAt:Date.now()+PREVIEW_TTL_MS}});
+    await chrome.alarms.create(RESULT_ALARM,{when:Date.now()+PREVIEW_TTL_MS});
     await clearPending(pending.token);
-    return { type: MESSAGE.FILL_RESULT, origin: pending.origin, outcomes: [...outcomes, ...result.outcomes] };
+    return completed;
   } catch (error) {
     await clearPending(pending.token);
     throw error;
@@ -709,6 +748,18 @@ async function loadPending() {
   }
   if (pending.expiresAt <= Date.now()) { await clearPending(); return null; }
   return pending;
+}
+
+async function clearFillResult() {
+  await chrome.storage.session.remove(RESULT_KEY);
+  await chrome.alarms.clear(RESULT_ALARM);
+}
+async function loadFillResult() {
+  const record = await chrome.storage.session.get(RESULT_KEY);
+  const result = record[RESULT_KEY];
+  if (!result) return null;
+  if (result.expiresAt <= Date.now()) { await clearFillResult(); return null; }
+  return result;
 }
 
 async function savePending(pending) {

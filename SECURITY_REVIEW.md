@@ -1,4 +1,4 @@
-# Security review: working MVP
+# Security review: prototype 1.1.0
 
 Reviewed on 2026-10-02. Scope: the checked-in extension, local storage access, service-worker messaging, content-script writes, extension UI rendering, permissions and declared dependencies. This is an engineering review with adversarial regression tests, not an independent penetration test or a guarantee against compromise.
 
@@ -10,6 +10,8 @@ Reviewed on 2026-10-02. Scope: the checked-in extension, local storage access, s
 | Legacy credential facts bypass the new save restriction | A legacy `apiKey` fact with an email alias was included in the preview and session snapshot. | Exclude sensitive metadata from all autofill profile sources; invalidate older pending previews containing such facts. | Previously stored or imported credentials could be disclosed if selected for filling. Existing stored facts are preserved for manual removal in Settings. |
 | Settings sender validation accepts embedded/inactive or wrong-path extension contexts | Direct tests with a nonzero frame ID could change profile settings. | Require the exact extension-page URL, top-level frame, extension origin when supplied, and active lifecycle when supplied. | Defense in depth. Ordinary websites already cannot load these resources; this was not a demonstrated remote website takeover. |
 | Unbounded preview size | A synthetic page with 301 controls still produced a preview, with no upper bound. | Fail closed above 300 visible controls. | Limits preview/matching work from large or hostile pages; not a defense against a page freezing its own renderer. |
+| Optional API responses and imported metadata were unbounded | Response JSON was read without a body-size cap; imported facts had no size/type limits. | Stop response consumption at 4 MiB, keep the ten-second deadline through body reading, reject oversized/unknown/null facts and duplicate profile identities, and return only summary fields to the chooser. | Resource and malformed-data defense for the optional local API client; does not establish backend authorization or storage safety. |
+| Sensitive fact restrictions differed from field restrictions | Saves rejected passwords and keys but some passcode/PIN and government-ID labels were allowed. | Align fact restrictions with credential and identifier exclusions. Postal PIN facts remain allowed only with postal type and metadata; payment/security PINs stay blocked. | Metadata filtering cannot infer the actual meaning of arbitrary values. |
 | Extension-page CSP could be narrower | The manifest relied on Chromium's default extension policy. | Explicit self-only scripts/resources; no objects, frames, embedding, form actions or base changes; network access only to the configured development API origin. | Limits the impact of a future UI injection or accidental remote dependency. It does not restrict scripts running on the destination website. |
 
 The script block and network allowlist are enforced by the browser. Moving POD-16 to a different deployment requires reviewing both the exact host permission and `connect-src`, not adding broad wildcard access.
@@ -20,7 +22,7 @@ Run `npm ci`, then `npm run test:security`. The test creates an isolated tempora
 
 The checks confirm:
 
-- Actual content-script callers cannot retrieve previews, enumerate profiles, approve fills, change profile mode or clear remembered mappings.
+- Actual content-script callers cannot retrieve previews, enumerate or select profiles, approve fills, change profile mode or clear remembered mappings.
 - Content scripts cannot read trusted local profile storage or session API keys.
 - Page JavaScript cannot access isolated content-script state; forged `window.postMessage` requests do not fill controls.
 - An extension popup opened as an ordinary tab does not acquire popup privileges.
@@ -29,7 +31,7 @@ The checks confirm:
 - HTML supplied in profile names and labels does not become executable UI markup.
 - A route change in a real focus handler is rejected before writing the value.
 
-`npm test` also checks embedded/inactive senders, stale sensitive previews, changed profiles/documents, expiry, credentials, HTTPS and overwrite restrictions. `npm run test:browser` verifies filling and guided settings saves; that functional test relaxes the popup-tab guard only in its temporary copy, and must not be used as evidence for production sender authentication.
+`npm test` passes 118 checks, including embedded/inactive senders, stale sensitive previews, changed profiles/documents, expiry, credentials, HTTPS and overwrite restrictions. `npm run test:browser` verifies filling, guided settings saves, profile separation, unsaved-edit protection, popup result restoration and native pre-write constraint checks; that functional test relaxes the popup-tab guard only in its temporary copy, and must not be used as evidence for production sender authentication.
 
 `npm audit` reported zero known dependency advisories at review time. That is an advisory lookup, not evidence that the code or dependencies have no vulnerabilities. Playwright is a development dependency; the installed extension uses no third-party runtime package.
 
@@ -39,6 +41,7 @@ The checks confirm:
 - Any destination website, including a malicious HTTPS site or one with third-party scripts, can read values after filling. HTTPS is not a trust certificate for the site's behavior. Review the exact recipient and values before approval.
 - Sensitive-fact blocking examines keys, labels and aliases. It cannot identify a password deliberately stored under an unrelated innocuous label. Do not store credentials or government identifiers; remove any legacy sensitive facts manually.
 - Optional POD-16 server authorization, storage, deployment and compromise resistance were not reviewed. Loopback HTTP is a development exception; production API use needs HTTPS and a separate backend review.
+- The short-lived last-result record stores origin, profile name, field labels and statuses, without values. It expires after ten minutes or clears on scan/profile change; these labels and names can still reveal context.
 - No real third-party attack campaign, fuzzing campaign, browser vulnerability review or independent penetration test has been completed. Forms exceeding 300 visible controls are rejected. Other resource-exhaustion attacks remain an area for further testing.
 - The real-browser security check uses a synthetic host grant and does not verify browser-toolbar permission acquisition, every supported browser release, or deployment packaging.
 

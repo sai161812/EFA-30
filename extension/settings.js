@@ -1,4 +1,4 @@
-import { CONTACT_FIELDS, contactEditorFacts, removeEmptyContactFacts } from "./shared/contact-fields.js";
+import { ALL_PROFILE_FIELDS, contactEditorFacts, removeEmptyContactFacts } from "./shared/contact-fields.js";
 import { MESSAGE, isMessageType } from "./shared/contracts.js";
 import { normalizeApiOrigin } from "./profile-api.js";
 
@@ -12,6 +12,8 @@ let localMode = false;
 let editorRequest = 0;
 let editRevision = 0;
 let savingProfile = false;
+let savedEditRevision = 0;
+let creatingProfile = false;
 document.querySelector("#profile-editor").addEventListener("input", () => { editRevision += 1; });
 document.querySelector("#profile-editor").addEventListener("change", () => { editRevision += 1; });
 
@@ -29,7 +31,10 @@ document.querySelector("#create-profile").addEventListener("click", createProfil
 document.querySelector("#add-fact").addEventListener("click", () => addFact());
 document.querySelector("#save-profile").addEventListener("click", saveProfile);
 document.querySelector("#development-profile-enabled").addEventListener("change", setDevelopmentProfile);
-profileSelect.addEventListener("change", () => void loadEditor(profileSelect.value));
+profileSelect.addEventListener("change", () => {
+  if (currentProfile && editRevision !== savedEditRevision && !confirm("Discard unsaved edits and open a different profile?")) { profileSelect.value = currentProfile.id; return; }
+  void loadEditor(profileSelect.value);
+});
 document.querySelector("#enable-local").addEventListener("click", async () => {
   try { await send(MESSAGE.LOCAL_PROFILE_ENABLE); clearEditor(); await initialize(); }
   catch (error) { showError(error); }
@@ -137,13 +142,17 @@ async function refreshProfiles(selectedId = "") {
 async function selectProfile() {
   try {
     const id = profileSelect.value;
-    if (!id) throw new Error("Choose one of the three profile types first.");
+    if (!id) throw new Error("Choose a profile first.");
     await send(MESSAGE.API_SELECT_PROFILE, { profileId: id });
     status.textContent = "Selected profile saved. New scans use this profile only.";
   } catch (error) { showError(error); }
 }
 
 async function createProfile() {
+  if (creatingProfile || savingProfile) return;
+  if (currentProfile && editRevision !== savedEditRevision && !confirm("Discard unsaved edits and create a new profile?")) return;
+  creatingProfile = true;
+  document.querySelector("#create-profile").disabled = true;
   try {
     const name = document.querySelector("#new-profile-name").value.trim();
     if (!name) throw new Error("Enter a name for the new profile.");
@@ -152,8 +161,9 @@ async function createProfile() {
     await refreshProfiles(result.profile.id);
     profileSelect.value = result.profile.id;
     await selectProfile();
-    status.textContent = "Profile created. Add approved facts below and save.";
+    status.textContent = "Profile created. Enter the details for this use and save.";
   } catch (error) { showError(error); }
+  finally { creatingProfile = false; document.querySelector("#create-profile").disabled = false; }
 }
 
 async function loadEditor(profileId) {
@@ -167,7 +177,8 @@ async function loadEditor(profileId) {
     currentProfile = result.profile;
     document.querySelector("#editor-title").textContent = `${currentProfile.type} profile · version ${currentProfile.version}`;
     document.querySelector("#profile-name").value = currentProfile.name;
-    factList.replaceChildren(...contactEditorFacts(currentProfile.facts).map((fact) => createFactRow(fact, true)));
+    factList.replaceChildren(...contactEditorFacts(currentProfile.facts, currentProfile.type).map((fact) => createFactRow(fact, true)));
+    savedEditRevision = editRevision;
     document.querySelector("#profile-editor").hidden = false;
   } catch (error) { showError(error); }
 }
@@ -219,7 +230,7 @@ function createFactRow(fact = {}, guided = false) {
   remove.textContent = "Remove fact";
   remove.addEventListener("click", () => { editRevision += 1; row.remove(); });
   row.append(remove);
-  const contact = guided && CONTACT_FIELDS.find(field => field.key === fact.key);
+  const contact = guided && ALL_PROFILE_FIELDS.find(field => field.key === fact.key);
   if (contact) {
     const value = row.querySelector('[data-key="value"]');
     const valueLabel = value.parentElement;
@@ -258,6 +269,7 @@ async function saveProfile() {
       return;
     }
     document.querySelector("#editor-title").textContent = `${currentProfile.type} profile - version ${currentProfile.version}`;
+    savedEditRevision = editRevision;
     const option = [...profileSelect.options].find((item) => item.value === currentProfile.id);
     if (option) option.textContent = `${currentProfile.name} (${currentProfile.type}) - v${currentProfile.version}`;
     status.textContent = `Profile saved as version ${currentProfile.version}. Pending previews were cleared.`;

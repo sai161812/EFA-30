@@ -1,12 +1,14 @@
 # EFA-30
 
-A standalone browser autofill extension. Save your own details locally, review suggestions, and confirm once to fill matching empty fields. PLUMA and POD-16 are not required for normal use.
+A standalone browser autofill extension. Keep separate named profiles for personal, college, work or other uses, review suggestions, and confirm once to fill matching empty fields. PLUMA and POD-16 are not required for normal use.
 
 ## Start here
 
-Follow the [simple usage guide](usage_guide.md): **Open settings > Use local profiles > Create > Enter contact details > Save**. Then open a website form and click **Scan this page**.
+Follow the [simple usage guide](usage_guide.md): **Open settings > Use local profiles > Create > Enter contact details > Save**. Then open a website form, choose **Profile for this form**, and click **Scan this page**.
 
 Load this project folder directly; no ZIP or build step is required. If already installed, click **Reload** on the browser extensions page to show the updated name. Your stored profiles stay in place when reloading the same extension.
+
+Current tested prototype: **1.1.0**. Run `python scripts/package-extension.py` to build its ZIP in `dist/`; extract it and load the folder containing `manifest.json`. See [PROTOTYPE_AUDIT.md](PROTOTYPE_AUDIT.md) for changes, verified checks and remaining limits.
 
 Optional field details: [PROFILE_REFERENCE.md](PROFILE_REFERENCE.md). The sections below are technical reference; you can skip POD-16 setup for local use.
 
@@ -45,6 +47,7 @@ Stop the fixture server with `Ctrl+C`. If `py` is unavailable, run `python -m ht
 
 - The extension requests `activeTab`, `scripting`, `storage`, `alarms` and the single optional host pattern `http://127.0.0.1:8000/*`; it has no all-sites permission. A different deployment needs its exact origin declared in the manifest before reload.
 - Pending profile data and approval choices live in `chrome.storage.session`, available only to trusted extension contexts, and expire after ten minutes. Cancel/fill completion clears the preview. Browser restart clears the session and requires sign-in again.
+- Recent fill outcomes are kept in trusted session storage for ten minutes, without filled values; a new scan or profile change clears them.
 - Corrected mappings are remembered only when you opt in. A rule stores the exact website origin, hashed page/form and semantic fingerprints, control kind/type, selected profile/backend identity, fact key/metadata fingerprint and rule version. It stores no entered/filled values, credentials or HTML. Reused mappings are suggestions only, are ready automatically when unambiguous and the target is empty, and are rejected when the form meaning, context, type or required profile fact changes. Inspect, edit, delete or clear rules in Settings.
 - API keys never enter local/sync storage, page messages or content scripts. The service worker has fixed profile-only routes; the content script cannot request profile data or approve a fill.
 - Profile data is re-read from POD-16 before scanning and revalidated by identity, backend, version and current facts immediately before filling. API outage, expired authentication or version change clears the preview and requires a fresh session/review.
@@ -76,7 +79,7 @@ For browser and live API verification:
 11. Open `http://localhost:8001/native-controls.html`, click **Run native controls check**, and confirm it reports PASS for the retained native select/date values and their input/change events.
 12. Correct a profile mapping in the preview, leave **Remember this mapping for this website and form** unchecked, then scan again and confirm no memory suggestion appears. Opt in on a correction and repeat: confirm the selected fact is ready for confirmation when the target is empty, then change the label, section, type, origin or profile fact key and confirm the suggestion is rejected. Inspect and delete the rule in Settings.
 
-Automated extension checks cover content-script native select/date fill and revalidation. A browser-native setter/event check is provided at `/native-controls.html`. Full popup interaction and live POD-16 testing require a manual Chrome/Edge session; use the steps above for those checks. The React fixture is separate from the extension UI and loads React only for its controlled-form test.
+Automated extension checks cover content-script native select/date fill and revalidation. A browser-native setter/event check is provided at `/native-controls.html`. Run `npm run test:browser` for a synthetic Edge popup/Settings flow and `npm run test:security` for production-guard browser attack checks. Real toolbar permission acquisition and live POD-16 testing still require a manual Chrome/Edge session; use the steps above for those checks. The React fixture is separate from the extension UI and loads React only for its controlled-form test.
 
 ## Phase 5 evaluation
 
@@ -90,7 +93,7 @@ Labels in `evaluation/corpus.mjs` and explicit expected values in `evaluation/ex
 
 See [evaluation/AUDIT.md](evaluation/AUDIT.md) for F1?F7 evidence and blockers, [evaluation/REPORT.md](evaluation/REPORT.md) for denominators and limitations, and [evaluation/MANUAL_PROTOCOL.md](evaluation/MANUAL_PROTOCOL.md) for the counterbalanced human comparison.
 
-F7's native PLUMA bridge is missing. Chrome/Edge verification, live POD-16 behavior, the required independent corpus and fresh held-out families, real saved-correction outcomes, observed fill reliability and human completion-time results remain incomplete. This is not a release sign-off.
+The historical Phase 5 evaluation does not describe the current standalone browser tests. Synthetic Edge functional and security checks now pass; broader Chrome/Edge website validation, live POD-16 behavior, the required independent corpus, untouched held-out families and human completion-time results remain incomplete. PLUMA's native bridge remains outside this standalone prototype. This is not a production release sign-off.
 
 After updating, reload the unpacked extension. The `alarms` permission supports pending-preview cleanup; expiry is also checked before use. Version-one correction rules remain inspectable but are retired from reuse: review a new correction and explicitly remember it again. Version-two rules show control/key/site/profile identifiers and fingerprints rather than retaining raw page labels.
 

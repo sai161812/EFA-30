@@ -1,5 +1,6 @@
 const PROFILE_PATH = "/v1/autofill/profiles";
 const REQUEST_TIMEOUT_MS = 10000;
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 export function normalizeApiOrigin(input) {
   if (typeof input !== "string" || !input.trim() || input.length > 255) throw new Error("Enter the POD-16 API origin, including https:// and any port.");
@@ -27,7 +28,12 @@ export async function requestProfileApi({ origin, token, path = "", method = "GE
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
     let payload;
-    try { payload = await response.json(); } catch { throw new Error("POD-16 returned an unreadable response."); }
+    try { payload = await readBoundedJson(response); }
+    catch (error) {
+      if (error?.name === "AbortError") throw error;
+      if (error?.message === "POD-16 response exceeds the supported 4 MiB limit.") throw error;
+      throw new Error("POD-16 returned an unreadable response.");
+    }
     if (!response.ok) {
       const apiError = payload?.error;
       if (response.status === 401) throw new Error("POD-16 session expired or the key was rejected. Sign in again.");
@@ -47,23 +53,52 @@ export async function requestProfileApi({ origin, token, path = "", method = "GE
   } finally { clearTimeout(timeout); }
 }
 
+async function readBoundedJson(response) {
+  const tooLarge = () => new Error("POD-16 response exceeds the supported 4 MiB limit.");
+  if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
+    await response.body?.cancel();
+    throw tooLarge();
+  }
+  if (!response.body) throw new Error("Empty API response.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", {fatal:true});
+  let bytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      const {done,value} = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) { await reader.cancel(); throw tooLarge(); }
+      text += decoder.decode(value, {stream:true});
+    }
+    text += decoder.decode();
+    return JSON.parse(text);
+  } finally { reader.releaseLock(); }
+}
+
+const FACT_TYPES = ["text", "email", "phone", "postal_code", "url", "year", "date", "skills", "project_snapshot"];
+const boundedString = (value, max, allowEmpty = false) => typeof value === "string" && value.length <= max && (allowEmpty || Boolean(value.trim()));
+const timestamp = value => value === undefined || value === null || boundedString(value, 80);
+
 export function validateProfileSummaryList(payload) {
-  if (!payload || !Array.isArray(payload.data) || payload.data.some((item) => !isSummary(item))) throw new Error("POD-16 returned an invalid profile list.");
-  return payload.data;
+  if (!payload || !Array.isArray(payload.data) || payload.data.length > 250 || payload.data.some((item) => !isSummary(item))) throw new Error("POD-16 returned an invalid profile list.");
+  if (new Set(payload.data.map(item => item.id)).size !== payload.data.length) throw new Error("POD-16 returned duplicate profile identities.");
+  return payload.data.map(({id,name,profile_type,version}) => ({id,name,profile_type,version}));
 }
 
 export function validateProfile(payload, expectedId) {
   const item = payload?.data ?? payload;
-  if (!item || typeof item.id !== "string" || !["personal", "college", "professional"].includes(item.profile_type) ||
-      typeof item.name !== "string" || !Number.isInteger(item.version) || item.version < 1 || !Array.isArray(item.facts)) {
+  if (!isSummary(item) || !timestamp(item.updated_at) || !Array.isArray(item.facts) || item.facts.length > 250) {
     throw new Error("POD-16 returned an invalid profile.");
   }
   if (expectedId && item.id !== expectedId) throw new Error("POD-16 returned a different profile identity. Select and review the correct profile.");
   const keys = new Set();
   const facts = item.facts.map((fact) => {
-    if (typeof fact.key !== "string" || typeof fact.label !== "string" || typeof fact.fact_type !== "string" ||
-        typeof fact.value !== "string" || typeof fact.source !== "string" || !Array.isArray(fact.aliases) ||
-        fact.aliases.some((alias) => typeof alias !== "string")) throw new Error("POD-16 returned an invalid profile fact.");
+    if (!fact || !boundedString(fact.key,80) || !/^[a-zA-Z0-9_.-]+$/.test(fact.key) || !boundedString(fact.label,120) || !FACT_TYPES.includes(fact.fact_type) ||
+        !boundedString(fact.value,12000,true) || !boundedString(fact.source,160) || !Array.isArray(fact.aliases) || fact.aliases.length > 20 ||
+        fact.aliases.some(alias => !boundedString(alias,80)) || !timestamp(fact.updated_at) ||
+        !(fact.date_precision === null || fact.date_precision === undefined || ["year","month","day"].includes(fact.date_precision))) throw new Error("POD-16 returned an invalid profile fact.");
     if (keys.has(fact.key)) throw new Error("POD-16 returned duplicate profile fact keys.");
     keys.add(fact.key);
     return { key: fact.key, label: fact.label, type: fact.fact_type, value: fact.value, source: fact.source,
@@ -73,6 +108,6 @@ export function validateProfile(payload, expectedId) {
 }
 
 function isSummary(item) {
-  return item && typeof item.id === "string" && ["personal", "college", "professional"].includes(item.profile_type) &&
-    typeof item.name === "string" && Number.isInteger(item.version) && item.version > 0;
+  return item && boundedString(item.id,80) && ["personal", "college", "professional"].includes(item.profile_type) &&
+    boundedString(item.name,120) && Number.isSafeInteger(item.version) && item.version > 0;
 }

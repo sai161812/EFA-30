@@ -1,5 +1,7 @@
 # EFA-30 profile field reference
 
+Create separate named profiles for different uses; select the intended profile in the popup before scanning. Setup offers common contact fields, extra education fields for College, and GitHub for Professional. All are optional. Multiple profiles in the same category are supported.
+
 Optional details for adding more facts. Start with [the simple guide](usage_guide.md).
 
 | Key | Label | Fact type | Example aliases |
@@ -20,7 +22,7 @@ Optional details for adding more facts. Start with [the simple guide](usage_guid
 | currentAddressLine1 | Current address line 1 | Text | current address line 1, current street |
 | currentCity | Current city | Text | current city |
 | currentRegion | Current state | Text | current state, current region |
-| currentPostalCode | Current postal code | Postal code | current postal code, current zip code |
+| currentPostalCode | Current postal code | Postal code | current postal code, current zip code, pin code, pincode |
 
 Use separate permanentAddressLine1/permanentCity/permanentRegion/permanentPostalCode keys for permanent address facts. Keep phone and postal values as text. Enter a complete date as YYYY-MM-DD with Day precision only when the complete date is known; use Year precision for year-only information. Enter first and last names explicitly if you want them filled separately. Add only facts you approve for reuse. Project snapshots must contain your explicitly approved text and still require a per-form choice.
 

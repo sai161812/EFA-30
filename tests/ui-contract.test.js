@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
-import { CONTACT_FIELDS, contactEditorFacts, removeEmptyContactFacts } from "../extension/shared/contact-fields.js";
+import { CONTACT_FIELDS, ALL_PROFILE_FIELDS, contactEditorFacts, removeEmptyContactFacts } from "../extension/shared/contact-fields.js";
 import { MESSAGE, isMessageType } from "../extension/shared/contracts.js";
 
 class Element {
@@ -16,11 +16,11 @@ class Element {
 }
 function harness(file, sendMessage) {
   const elements = new Map();
-  const context = vm.createContext({ CONTACT_FIELDS, contactEditorFacts, removeEmptyContactFacts, MESSAGE, isMessageType, console, setTimeout, clearTimeout, CSS: { escape: (value) => value },
+  const context = vm.createContext({ CONTACT_FIELDS, ALL_PROFILE_FIELDS, contactEditorFacts, removeEmptyContactFacts, MESSAGE, isMessageType, console, setTimeout, clearTimeout, CSS: { escape: (value) => value },
     chrome: { runtime: { sendMessage } }, Option: class extends Element { constructor(text, value) { super(); this.text = text; this.value = value; } },
     document: { querySelector(selector) { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); }, createTextNode(text) { return {textContent:text}; }, createElement(tag) { const element = new Element(); if (tag === "textarea") Object.defineProperty(element, "type", { get() { return "textarea"; } }); return element; } }
   });
-  const source = fs.readFileSync(new URL(`../extension/${file}`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace("void initialize();", "").replace("void loadPendingPreview();", "");
+  const source = fs.readFileSync(new URL(`../extension/${file}`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace("void initialize();", "").replace("void loadPendingPreview();", "").replace("void initializePopup();", "");
   vm.runInContext('"use strict";\n' + source, context);
   return context;
 }
@@ -132,4 +132,12 @@ test("failed connection clears the API key input", async () => {
   // This harness has no permission API, reproducing a failure before login.
   await vm.runInContext('connect()',ctx);
   assert.equal(vm.runInContext('document.querySelector("#api-key").value',ctx),"");
+});
+
+
+test("unresolved selected rows do not count as ready or enable confirmation", () => {
+  const ctx=harness("popup.js",async()=>({}));
+  vm.runInContext('currentPreview={rows:[{include:true,status:"needs choice",field:{eligible:true},value:""}]}; updateSelectionSummary(); setBusy(false);',ctx);
+  assert.equal(vm.runInContext('document.querySelector("#approve").disabled',ctx),true);
+  assert.match(vm.runInContext('document.querySelector("#summary").textContent',ctx),/0 fields ready/);
 });

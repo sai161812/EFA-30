@@ -638,7 +638,7 @@ test("sensitive facts are rejected without persisting their values", async () =>
   const runtime = makeRuntime();
   await loadWorker(runtime,"sensitive-fact-storage");
   await send(runtime,{type:"pluma/local-profile-enable"},settingsSender);
-  for (const key of ["password","apiKey","creditCardNumber","passportNumber"]) {
+  for (const key of ["password","apiKey","creditCardNumber","passportNumber","passcode","securityPin","governmentId","bankAccountNumber"]) {
     const result = await send(runtime,{type:"pluma/api-create-profile",profile:{profile_type:"personal",name:"Synthetic",facts:[{key,label:key,fact_type:"text",value:"private-value",source:"Synthetic",aliases:[]}]}},settingsSender);
     assert.equal(result.type,"pluma/workflow-error");
     assert.match(result.error,/Do not save/);
@@ -682,4 +682,90 @@ test("inactive documents and mismatched UI origins cannot act as Settings", asyn
     assert.equal(result.type,"pluma/workflow-error");
   }
   assert.equal(runtime.stored["local:profileApiSettings"],undefined);
+});
+
+
+test("named profiles of the same category switch without mixing facts or stale approvals", async () => {
+  const runtime=makeRuntime();await loadWorker(runtime,"named-profiles");
+  const settings=message=>send(runtime,message,settingsSender);
+  await settings({type:"pluma/local-profile-enable"});
+  const create=async(name,email)=>settings({type:"pluma/api-create-profile",profile:{profile_type:"personal",name,facts:[{key:"email",label:"Email",fact_type:"email",value:email,source:"Synthetic",aliases:["email"]}]}});
+  const personal=await create("Personal","personal@example.test");
+  const travel=await create("Travel","travel@example.test");
+  assert.equal(personal.type,"pluma/api-create-profile");assert.equal(travel.type,"pluma/api-create-profile");
+  await send(runtime,{type:"pluma/select-fill-profile",profileId:personal.profile.id});
+  const first=await send(runtime,{type:"pluma/scan-active-tab"});
+  assert.equal(first.rows[0].value,"personal@example.test");
+  const list=await send(runtime,{type:"pluma/get-fill-profiles"});
+  assert.equal(list.profiles.length,2);
+  assert.equal(JSON.stringify(list).includes("personal@example.test"),false,"Chooser lists names, never facts");
+  await send(runtime,{type:"pluma/select-fill-profile",profileId:travel.profile.id});
+  assert.equal(runtime.stored.pendingPreview,undefined);
+  const stale=await send(runtime,{type:"pluma/approve-and-fill",previewToken:first.previewToken,previewRevision:first.previewRevision});
+  assert.equal(stale.type,"pluma/workflow-error");
+  const next=await send(runtime,{type:"pluma/scan-active-tab"});
+  assert.equal(next.rows[0].value,"travel@example.test");
+  const filled=await send(runtime,{type:"pluma/approve-and-fill"});
+  assert.equal(filled.type,"pluma/fill-result");
+  assert.equal(runtime.calls.lastFillTarget.items[0].value,"travel@example.test");
+  const duplicate=await create("travel","other@example.test");
+  assert.equal(duplicate.type,"pluma/workflow-error");
+});
+
+test("supplying an unresolved answer makes it ready unless explicitly excluded", async () => {
+  const runtime=makeRuntime();await loadWorker(runtime,"answer-readiness");
+  const base=(await send(runtime,{type:"pluma/scan-active-tab"})).rows[0].field;
+  runtime.setFields([{...base,kind:"textarea",inputType:"textarea",label:"Why are you contacting us?",name:"message",autocomplete:""}]);
+  const initial=await send(runtime,{type:"pluma/scan-active-tab"});
+  assert.equal(initial.rows[0].include,false);
+  const answered=await send(runtime,{type:"pluma/update-preview",fieldId:base.id,changes:{valueOverride:"I have a question about your service."}});
+  assert.equal(answered.row.include,true);
+  await send(runtime,{type:"pluma/update-preview",fieldId:base.id,changes:{include:false}});
+  const edited=await send(runtime,{type:"pluma/update-preview",fieldId:base.id,changes:{valueOverride:"Updated answer"}});
+  assert.equal(edited.row.include,false);
+});
+
+test("website callers cannot list or select fill profiles", async () => {
+  const runtime=makeRuntime();await loadWorker(runtime,"chooser-security");
+  const hostile={id:"extension-test",url:"https://hostile.example/",tab:{id:7},frameId:0};
+  for(const type of ["pluma/get-fill-profiles","pluma/select-fill-profile"]) {
+    const result=await send(runtime,{type,profileId:"123e4567-e89b-12d3-a456-426614174000"},hostile);
+    assert.equal(result.type,"pluma/workflow-error");
+  }
+  assert.equal(runtime.stored["local:profileApiSettings"],undefined);
+});
+
+
+test("completed results survive popup reopening without retaining filled values and expire", async () => {
+  const runtime=makeRuntime();await loadWorker(runtime,"result-restore");
+  const scan=await send(runtime,{type:"pluma/scan-active-tab"});
+  const value=scan.rows[0].value;
+  await send(runtime,{type:"pluma/approve-and-fill"});
+  const restored=await send(runtime,{type:"pluma/get-preview"});
+  assert.equal(restored.pending,false);
+  assert.equal(restored.lastFillResult.outcomes[0].status,"filled");
+  assert.equal(JSON.stringify(runtime.stored.lastFillResult).includes(value),false);
+  runtime.stored.lastFillResult.expiresAt=0;
+  assert.equal((await send(runtime,{type:"pluma/get-preview"})).lastFillResult,null);
+  assert.equal(runtime.stored.lastFillResult,undefined);
+});
+
+
+test("oversized per-fill answers need correction before becoming ready", async () => {
+  const runtime=makeRuntime();await loadWorker(runtime,"answer-limit");
+  const base=(await send(runtime,{type:"pluma/scan-active-tab"})).rows[0].field;
+  runtime.setFields([{...base,kind:"textarea",inputType:"textarea",label:"Why are you contacting us?",name:"message",autocomplete:"",maxLength:20}]);
+  await send(runtime,{type:"pluma/scan-active-tab"});
+  const invalid=await send(runtime,{type:"pluma/update-preview",fieldId:base.id,changes:{valueOverride:"x".repeat(21)}});
+  assert.equal(invalid.row.status,"needs choice");assert.equal(invalid.row.include,false);
+  const valid=await send(runtime,{type:"pluma/update-preview",fieldId:base.id,changes:{valueOverride:"A short question"}});
+  assert.equal(valid.row.status,"matched");assert.equal(valid.row.include,true);
+});
+
+test("postal PIN facts are accepted without permitting security PIN storage", async () => {
+  const runtime=makeRuntime();await loadWorker(runtime,"postal-storage");
+  await send(runtime,{type:"pluma/local-profile-enable"},settingsSender);
+  const result=await send(runtime,{type:"pluma/api-create-profile",profile:{profile_type:"personal",name:"Postal",facts:[{key:"currentPostalCode",label:"Postal code",fact_type:"postal_code",value:"005501",source:"Synthetic",aliases:["pin code","pincode"]}]}},settingsSender);
+  assert.equal(result.type,"pluma/api-create-profile");
+  assert.equal(result.profile.facts[0].value,"005501");
 });

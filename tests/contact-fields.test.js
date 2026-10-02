@@ -30,3 +30,31 @@ test("saved contact values reject malformed emails and unsafe website links", ()
   }
   assert.doesNotThrow(() => validateContactFacts([{fact_type:"email",value:"a@example.test"},{fact_type:"url",value:"https://example.test/"}]));
 });
+
+
+test("college and work setup offer relevant optional details without copying another identity", () => {
+  const college=contactEditorFacts([],"college");
+  assert.ok(college.some(fact=>fact.key==="collegeEmail"));
+  assert.ok(college.some(fact=>fact.key==="graduationDate" && fact.datePrecision==="day"));
+  assert.ok(contactEditorFacts([],"professional").some(fact=>fact.key==="github"));
+  assert.deepEqual(removeEmptyContactFacts(college),[]);
+  assert.ok(college.every(fact=>fact.value===""));
+});
+
+test("date values retain explicit precision and reject impossible dates", () => {
+  assert.throws(()=>validateContactFacts([{fact_type:"date",value:"2027-02-30",date_precision:"day"}]),/valid calendar/);
+  assert.throws(()=>validateContactFacts([{fact_type:"date",value:"2027",date_precision:"day"}]),/precision/);
+  assert.doesNotThrow(()=>validateContactFacts([{fact_type:"date",value:"2027",date_precision:"year"}]));
+});
+
+
+test("Indian postal PIN labels resolve to the saved postal component", () => {
+  const facts=contactEditorFacts([]).map(fact=>({...fact,value:fact.key === "currentPostalCode" ? "005501" : ""}));
+  const field={kind:"input",inputType:"text",eligible:true,ariaLabels:[],instructions:[],context:"",maxLength:-1};
+  for (const label of ["PIN code","Pincode"]) {
+    const result=matchField({...field,label},facts);
+    assert.equal(result.status,"matched");
+    assert.equal(result.profileKey,"currentPostalCode");
+    assert.equal(facts.find(fact => fact.key === result.profileKey).value,"005501");
+  }
+});

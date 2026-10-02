@@ -50,7 +50,7 @@ try {
   const probes=await worker.evaluate(async tabId=>{
     const [probe]=await chrome.scripting.executeScript({target:{tabId},func:async()=>{
       const results=[];
-      for(const type of ["pluma/get-preview","pluma/api-status","pluma/api-list-profiles","pluma/approve-and-fill","pluma/local-profile-enable","pluma/memory-clear"]){
+      for(const type of ["pluma/get-fill-profiles","pluma/select-fill-profile","pluma/get-preview","pluma/api-status","pluma/api-list-profiles","pluma/approve-and-fill","pluma/local-profile-enable","pluma/memory-clear"]){
         results.push(await chrome.runtime.sendMessage({type,previewToken:"forged",previewRevision:0}));
       }
       let local,session;

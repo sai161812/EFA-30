@@ -42,13 +42,21 @@
   }
 
   function scanDocument() {
+    for (const [id, element] of state.elements) if (!element.isConnected) state.elements.delete(id);
     const controls = [];
     for (const element of document.querySelectorAll("input, textarea, select")) {
       if (!isVisible(element)) continue;
       controls.push(element);
       if (controls.length > 300) throw new Error("Too many visible controls.");
     }
-    const fields = controls.map(describeField);
+    const fields = [];
+    let metadataChars = 0;
+    for (const element of controls) {
+      const field = describeField(element);
+      metadataChars += JSON.stringify(field).length;
+      if (metadataChars > 1000000) throw new Error("Form metadata exceeds the supported limit.");
+      fields.push(field);
+    }
     const eligible = fields.filter((field) => field.eligible).length;
     return { type: "pluma/scan-result", documentUrl: location.href, fields, summary: { total: fields.length, eligible, blocked: fields.length - eligible, notices: ["Embedded frames, custom dropdowns and shadow DOM are not scanned."] } };
   }
@@ -84,14 +92,15 @@
       placeholder: clean(element.getAttribute("placeholder")),
       context,
       inputType,
-      formIdentity: element.form ? { id: element.form.id || "", name: element.form.getAttribute("name") || "", action: element.form.getAttribute("action") || "", method: element.form.getAttribute("method") || "" } : null,
-      options: isNativeSelect(element) ? [...element.options].slice(0, 100).map((option) => ({ value: String(option.value), label: cleanOption(option.label || option.textContent), disabled: Boolean(option.disabled || option.parentElement?.disabled) })) : [],
+      formIdentity: element.form ? { id: boundedRaw(element.form.id), name: boundedRaw(element.form.getAttribute("name")), action: boundedRaw(element.form.getAttribute("action")), method: boundedRaw(element.form.getAttribute("method")) } : null,
+      options: isNativeSelect(element) && element.options.length <= 500 ? [...element.options].map((option) => ({ value: String(option.value).slice(0,4001), label: cleanOption(option.label || option.textContent), disabled: Boolean(option.disabled || option.parentElement?.disabled) })) : [],
       multiple: isNativeSelect(element) ? Boolean(element.multiple) : false,
       maxLength: Number.isInteger(element.maxLength) ? element.maxLength : -1,
       visible,
       hasValue,
       eligible,
       unsupportedReason: unsupportedReason || (!eligible ? (element.disabled || element.readOnly ? "Disabled or read-only control." : "Unsupported control type.") : ""),
+      nativeConstraints: {pattern:boundedRaw(element.getAttribute("pattern")),min:boundedRaw(element.getAttribute("min")),max:boundedRaw(element.getAttribute("max")),step:boundedRaw(element.getAttribute("step")),required:Boolean(element.required)},
       revision: state.revisions.get(element) || 0
     };
   }
@@ -104,6 +113,7 @@
       state.revisions.set(element, 0);
       state.elements.set(id, element);
     }
+    state.elements.set(id, element);
     return id;
   }
 
@@ -112,7 +122,7 @@
     const ariaLabel = clean(element.getAttribute("aria-label"));
     if (ariaLabel) values.push(ariaLabel);
     const labelledBy = clean(element.getAttribute("aria-labelledby")).split(/\s+/).filter(Boolean);
-    for (const id of labelledBy) {
+    for (const id of labelledBy.slice(0,16)) {
       const referenced = document.getElementById(id);
       if (referenced?.matches?.("input, textarea, select, button")) continue;
       const text = clean(labelText(referenced));
@@ -126,7 +136,7 @@
     const description = clean(element.getAttribute("aria-description"));
     if (description) values.push(description);
     const describedBy = clean(element.getAttribute("aria-describedby")).split(/\s+/).filter(Boolean);
-    for (const id of describedBy) {
+    for (const id of describedBy.slice(0,16)) {
       const referenced = document.getElementById(id);
       if (referenced?.matches?.("input, textarea, select, button")) continue;
       const text = clean(labelText(referenced));
@@ -160,7 +170,7 @@
   }
 
   function readReferencedText(element, attribute) {
-    return clean((element?.getAttribute(attribute) || "").split(/\s+/).filter(Boolean).map((id) => {
+    return clean(clean(element?.getAttribute(attribute)).split(/\s+/).filter(Boolean).slice(0,16).map((id) => {
       const referenced = document.getElementById(id);
       return referenced?.matches?.("input, textarea, select, button") ? "" : labelText(referenced);
     }).join(" "));
@@ -175,10 +185,13 @@
   }
 
   function exclusionReason(element, type, autocomplete, semanticText) {
-    if (semanticText.length > 4000 || [autocomplete, element.getAttribute("name"), element.id, element.getAttribute("placeholder")].some((value) => String(value || "").length > 4000)) return "Field metadata exceeds the supported limit; review this field manually.";
+    if (semanticText.length > 4000 || [autocomplete, element.getAttribute("name"), element.id, element.getAttribute("placeholder"), element.getAttribute("pattern"), element.getAttribute("min"), element.getAttribute("max"), element.getAttribute("step"), element.getAttribute("aria-labelledby"), element.getAttribute("aria-describedby")].some((value) => String(value || "").length > 4000)) return "Field metadata exceeds the supported limit; review this field manually.";
+    if (["aria-labelledby","aria-describedby"].some(attribute => clean(element.getAttribute(attribute)).split(/\s+/).filter(Boolean).length > 16)) return "Too many accessible label references; review this field manually.";
+    if (element.form && [element.form.id, ...["name","action","method"].map(attribute => element.form.getAttribute(attribute))].some(value => String(value || "").length > 4000)) return "Form metadata exceeds the supported limit; review this field manually.";
     const tokens = autocomplete.toLowerCase().split(/\s+/);
     const role = String(element.getAttribute("role") || "").toLowerCase();
-    if (isNativeSelect(element) && element.options.length > 100) return "Select controls with more than 100 options require manual entry.";
+    if (isNativeSelect(element) && element.options.length > 500) return "Select controls with more than 500 options require manual entry.";
+    if (isNativeSelect(element) && [...element.options].some(option => String(option.value).length > 4000 || String(option.label || option.textContent).length > 4000)) return "Option metadata exceeds the supported limit; review this field manually.";
     if (role === "combobox" || element.getAttribute("aria-haspopup") === "listbox" || element.hasAttribute?.("list")) return "Custom dropdown controls are unsupported.";
     const name = `${element.getAttribute("name") || ""} ${element.id || ""}`;
     const riskText = `${name} ${semanticText}`.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9]+/g, " ");
@@ -188,8 +201,10 @@
     if (type === "checkbox" || type === "radio") return "Consent, checkbox and radio controls are never filled.";
     if (["submit", "button", "reset", "image"].includes(type)) return "Action controls are unsupported.";
     if (tokens.includes("one-time-code") || /\b(otp|one time code|verification code|authentication code|security code)\b/.test(riskText)) return "One-time-code fields are never filled.";
+    const postalPin = (tokens.includes("postal-code") || /\b(pin code|pincode)\b/.test(riskText)) && !/\b(payment|bank|card|atm|transaction|access|login|authentication|security|verification)\b/.test(riskText);
+    if (/\bpin\b/.test(riskText) && !postalPin) return "Security and payment PIN fields are never filled.";
     if (tokens.some((token) => token.startsWith("cc-")) || ["current-password", "new-password"].some((token) => tokens.includes(token)) ||
-      /\b(password|passphrase|passcode|pin|api key|access token|refresh token|secret key|private key|cvv|cvc|card number|credit card|bank account|account number|routing number|ssn|social security|passport|driver s license|national id|aadhaar|government id|tax id|identity number|signature|consent|agree|accept terms)\b/.test(riskText)) return "Sensitive identity, payment, signature or consent fields are never filled.";
+      /\b(password|passphrase|passcode|api key|access token|refresh token|secret key|private key|cvv|cvc|card number|credit card|bank account|account number|routing number|ssn|social security|passport|driver s license|national id|aadhaar|government id|tax id|identity number|signature|consent|agree|accept terms)\b/.test(riskText)) return "Sensitive identity, payment, signature or consent fields are never filled.";
     if (isDisabled(element) || element.readOnly) return "Disabled or read-only controls are not editable.";
     if (!["text", "email", "tel", "url", "textarea", "date", "select-one"].includes(type)) return type === "select-multiple" ? "Multi-select controls are unsupported." : "Only text, email, telephone, URL, date and single-select controls are supported.";
     return "";
@@ -211,6 +226,7 @@
 
   function isNativeSelect(element) { return typeof HTMLSelectElement !== "undefined" && element instanceof HTMLSelectElement; }
 
+  function boundedRaw(value) { return String(value || "").slice(0,4001); }
   function clean(value) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 4001); }
   function cleanOption(value) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 4001); }
 
@@ -272,6 +288,14 @@
           outcomes.push(outcome(item.fieldId, "skipped", "The field changed on focus. Scan and review again."));
           continue;
         }
+        if (typeof element.cloneNode === "function") {
+          const validation = element.cloneNode(true);
+          setNativeValue(validation, item.value);
+          if (validation.value !== item.value || validation.validity?.valid === false) {
+            outcomes.push(outcome(item.fieldId, "skipped", "The approved value does not meet this field's native constraints. Edit the value and scan again."));
+            continue;
+          }
+        }
         setNativeValue(element, item.value);
         element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         element.dispatchEvent(new Event("change", { bubbles: true }));
@@ -289,7 +313,7 @@
       if (result.status !== "filled") return result;
       const item = items.find((candidate) => candidate.fieldId === result.fieldId);
       const element = state.elements.get(result.fieldId);
-      if (!element?.isConnected || element.value !== item.value || element.validity?.valid === false || !describeField(element).eligible || !sameStructure(item.expected, describeField(element))) {
+      if (location.href !== targetUrl || !element?.isConnected || element.value !== item.value || element.validity?.valid === false || !describeField(element).eligible || !sameStructure(item.expected, describeField(element))) {
         return outcome(result.fieldId, "failed", "The value was changed, invalidated or removed before final verification. Review this field.");
       }
       return result;
@@ -300,7 +324,7 @@
     return sameSemantics({ ...expected, hasValue: current.hasValue, revision: current.revision }, current);
   }
   function sameSemantics(expected, current) {
-    const keys = ["id", "kind", "label", "ariaLabels", "instructions", "autocomplete", "name", "domId", "placeholder", "context", "inputType", "formIdentity", "options", "multiple", "maxLength", "visible", "hasValue", "eligible", "revision"];
+    const keys = ["id", "kind", "label", "ariaLabels", "instructions", "autocomplete", "name", "domId", "placeholder", "context", "inputType", "formIdentity", "options", "multiple", "maxLength", "visible", "hasValue", "eligible", "nativeConstraints", "revision"];
     return keys.every((key) => stableSerialize(expected[key]) === stableSerialize(current[key]));
   }
 

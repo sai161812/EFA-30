@@ -1,4 +1,4 @@
-# MVP privacy review
+# Prototype privacy review
 
 The application is a browser extension. Enter reusable contact details in its own Settings page. Local mode has no account, analytics, remote matching service, or profile upload. Optional POD-16 mode sends profile requests to the configured API; that server's storage and access controls were not audited here.
 
@@ -8,6 +8,7 @@ The application is a browser extension. Enter reusable contact details in its ow
 | API origin and selected profile | Local extension storage | Needed to choose the data source. Never includes the API key. |
 | API key | Trusted `chrome.storage.session`, until sign-out or browser restart | Needed only for optional POD-16 authentication. The input is cleared after successful or failed connection. |
 | Pending preview: profile snapshot, target URL, field descriptions, edits | Trusted session storage, up to ten minutes; cleared on cancel or completed fill | Needed to show suggestions and reject changed data/targets. Includes the page URL and its query string; URLs may themselves contain private information. Never stored in local/sync storage. |
+| Last fill result: website origin, profile name, field labels, statuses and fixed outcome messages | Trusted session storage, up to ten minutes; cleared by a new scan or profile/data-source change | Helps show results after popup closure. Contains no filled values, full page URL or API key. Labels and profile names may themselves contain private information. |
 | Remembered corrections | Local extension storage until deleted in Settings; explicit opt-in | Origin, profile identifier, fact key, and hashed field/form/source metadata. No filled values. Hashes and identifiers are not a guarantee of anonymity. |
 | Existing values in supported controls | Content-script memory during the page lifetime | Used to detect edits, including silent programmatic edits, and prevent stale overwrites. Not sent in scan messages or saved to extension storage. Password and other excluded controls are not read for this tracking. |
 | Confirmed values | Written to approved controls in the recorded page/document | Only approved values are sent to the content script. The destination site and its scripts can read them immediately, before submission. The extension never submits the form. |
@@ -18,8 +19,8 @@ The application is a browser extension. Enter reusable contact details in its ow
 - Pages cannot retrieve profiles, manage facts, or approve fills. Storage is restricted to trusted extension contexts. No all-sites host permission is requested.
 - Existing values require separate overwrite approval. Hidden, disabled, readonly, password, key/token, identity, payment, consent and upload controls are excluded.
 - New or edited profile facts labelled as credentials, payment credentials or government identifiers are rejected. This checks fact metadata, not the meaning of arbitrary values. Previously stored facts are not silently deleted; remove unwanted facts in Settings. Sensitive facts are excluded from autofill previews and legacy pending previews are invalidated.
-- Saved email facts reject obvious malformed values. Website facts require HTTP/HTTPS links without embedded credentials.
-- Optional API calls use HTTPS except loopback, omit cookies, disable caching and reject redirects. Server-provided error text is not reflected into the UI.
+- Saved email facts reject obvious malformed values. Website facts require HTTP/HTTPS links without embedded credentials. Years and dates require valid explicit precision. Blank optional setup fields are not saved. Profiles remain separate; switching invalidates pending approval.
+- Optional API calls use HTTPS except loopback, omit cookies, disable caching and reject redirects. API responses stop at 4 MiB; imported profiles have bounded names, facts, values and aliases. Server-provided error text is not reflected into the UI.
 - `.private/` is excluded from Git. Actual profile data belongs in browser storage, not repository files.
 
 ## Practical limits

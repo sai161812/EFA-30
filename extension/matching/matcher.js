@@ -176,7 +176,7 @@ function fieldAddressPart(field) {
   const hints = [...new Set(tokens.map(token => parts[token]).filter(Boolean))];
   if (hints.length === 1) return hints[0];
   const text = normalizeAlias([field.label, ...(field.ariaLabels || []), field.name, field.domId, field.placeholder].filter(Boolean).join(" "));
-  if (/\b(postal code|zip code|postal|zip)\b/.test(text)) return "postal";
+  if (/\b(postal code|zip code|postal|zip|pin code|pincode)\b/.test(text)) return "postal";
   if (/\b(city|town)\b/.test(text)) return "city";
   if (/\b(state|province|region)\b/.test(text)) return "region";
   if (/\bcountry\b/.test(text)) return "country";
@@ -215,7 +215,7 @@ function classifyCategory(text) {
   if (distinct.includes("collegeEmail")) return { kind: "collegeEmail" };
   if (distinct.includes("institution")) return { kind: "institution" };
   if (distinct.includes("personalEmail")) return { kind: "personalEmail" };
-  if ((/\b(address|street|postal|zip code)\b/i.test(text) && !/\bemail address\b/i.test(text))) return { kind: "address" };
+  if ((/\b(address|street|postal|zip code|pin code|pincode)\b/i.test(text) && !/\bemail address\b/i.test(text))) return { kind: "address" };
   if (/\b(expected graduation date|graduation date|completion date)\b/i.test(text)) return { kind: "fullDate" };
   if (/\b(graduation year|year of graduation|expected graduation year)\b/i.test(text)) return { kind: "year" };
   return { kind: null };

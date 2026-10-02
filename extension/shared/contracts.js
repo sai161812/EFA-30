@@ -1,4 +1,6 @@
 export const MESSAGE = Object.freeze({
+  GET_FILL_PROFILES: "pluma/get-fill-profiles",
+  SELECT_FILL_PROFILE: "pluma/select-fill-profile",
   SCAN_ACTIVE_TAB: "pluma/scan-active-tab",
   GET_PREVIEW: "pluma/get-preview",
   UPDATE_PREVIEW: "pluma/update-preview",
@@ -79,5 +81,7 @@ export function isSecureFormUrl(input) {
 export function isSensitiveFact(fact) {
   const metadata = [fact.key, fact.label, ...(fact.aliases || [])].join(" ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9]+/g, " ");
-  return /\b(password|passphrase|api key|access token|refresh token|secret key|private key|credit card|card number|cvv|cvc|bank account|routing number|one time code|otp|ssn|social security|passport|aadhaar|national id)\b/.test(metadata);
+  const postalPin = (fact.type || fact.fact_type) === "postal_code" && /\b(postal|zip|pincode|pin code)\b/.test(metadata) && !/\b(payment|bank|card|atm|transaction|access|login|authentication|security|verification)\b/.test(metadata);
+  if (/\bpin\b/.test(metadata) && !postalPin) return true;
+  return /\b(password|passphrase|passcode|api key|access token|refresh token|secret key|private key|credit card|card number|cvv|cvc|bank account|account number|routing number|one time code|verification code|authentication code|security code|otp|ssn|social security|passport|driver s license|aadhaar|national id|government id|tax id|identity number)\b/.test(metadata);
 }

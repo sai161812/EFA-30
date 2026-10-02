@@ -8,23 +8,75 @@ let updateQueue = Promise.resolve();
 let currentPreview = null;
 let isBusy = false;
 let updateError = null;
+let profileChoices = [];
+let selectedProfileId = "";
+let profileSource = "none";
 
 document.querySelector("#scan").addEventListener("click", scan);
 document.querySelector("#approve").addEventListener("click", approve);
 document.querySelector("#cancel").addEventListener("click", cancelPreview);
 document.querySelector("#settings").addEventListener("click", () => chrome.runtime.openOptionsPage());
-void loadPendingPreview();
+document.querySelector("#fill-profile").addEventListener("change", switchFillProfile);
+void initializePopup();
+
+async function initializePopup() {
+  setBusy(true);
+  try { await loadFillProfiles(); await loadPendingPreview(); }
+  catch (error) { setStatus(error.message || "Could not load profiles. Open Settings to check your setup."); }
+  finally { setBusy(false); }
+}
+
+async function loadFillProfiles() {
+  const response = await chrome.runtime.sendMessage({type:MESSAGE.GET_FILL_PROFILES});
+  if (handleError(response)) throw new Error(response.error);
+  if (response?.type !== MESSAGE.GET_FILL_PROFILES || !Array.isArray(response.profiles)) throw new Error("Could not load the profile list.");
+  profileChoices = response.profiles;
+  selectedProfileId = response.selectedProfileId || "";
+  profileSource = response.source;
+  const select = document.querySelector("#fill-profile");
+  select.replaceChildren(new Option("Choose a profile", ""));
+  for (const profile of profileChoices) select.append(new Option(`${profile.name} (${profile.profile_type})`, profile.id));
+  select.value = selectedProfileId;
+  document.querySelector("#profile-help").textContent = profileChoices.length ? "Only the selected profile is used. Switching clears the old preview." : "Open Settings to create a Personal, College, or Professional profile.";
+}
+
+async function switchFillProfile() {
+  if (isBusy) return;
+  const select = document.querySelector("#fill-profile");
+  const profileId = select.value;
+  if (!profileId || profileId === selectedProfileId) { select.value = selectedProfileId; return; }
+  setBusy(true);
+  try {
+    timers.forEach(clearTimeout); timers.clear();
+    await updateQueue;
+    const response = await chrome.runtime.sendMessage({type:MESSAGE.SELECT_FILL_PROFILE,profileId});
+    if (handleError(response)) { select.value = selectedProfileId; return; }
+    if (response?.type !== MESSAGE.SELECT_FILL_PROFILE || response.profileId !== profileId) throw new Error("Profile selection was not acknowledged.");
+    selectedProfileId = profileId;
+    currentPreview = null;
+    updateError = null;
+    preview.hidden = true;
+    rows.replaceChildren();
+    document.querySelector("#outcomes").hidden = true;
+    setStatus("Profile changed. Scan the page to review its details.");
+  } catch (error) { select.value = selectedProfileId; setStatus(error.message || "Could not change profiles."); }
+  finally { updateSelectionSummary(); setBusy(false); }
+}
 
 async function loadPendingPreview() {
   try {
     const response = await chrome.runtime.sendMessage({ type: MESSAGE.GET_PREVIEW });
     if (handleError(response)) return;
     if (response.pending) renderPreview(response);
-    else setStatus("Ready to scan the active page.");
+    else if (response.lastFillResult) {
+      renderOutcomes(response.lastFillResult.outcomes || []);
+      setStatus(`Last fill on ${response.lastFillResult.origin} using ${response.lastFillResult.profileName}. Check the results below.`);
+    } else setStatus("Ready to scan the active page.");
   } catch (error) { setStatus(error?.message || "Could not restore the pending preview."); }
 }
 
 async function scan() {
+  if (isBusy) return;
   setBusy(true);
   const scanButton = document.querySelector("#scan");
   scanButton.textContent = "Scanning…";
@@ -35,6 +87,10 @@ async function scan() {
     timers.clear();
     await updateQueue;
     updateError = null;
+    currentPreview = null;
+    preview.hidden = true;
+    rows.replaceChildren();
+    await loadFillProfiles();
     const response = await chrome.runtime.sendMessage({ type: MESSAGE.SCAN_ACTIVE_TAB });
     if (handleError(response)) return;
     renderPreview(response);
@@ -95,7 +151,7 @@ function renderPreview(data) {
   document.querySelector("#empty-fields").hidden = data.counts.eligible > 0;
   rows.replaceChildren(...data.rows.map((row) => createRow(row, data.profile)));
   preview.hidden = false;
-  document.querySelector("#approve").disabled = isBusy || Boolean(data.filling) || !data.rows.some(row => row.include);
+  document.querySelector("#approve").disabled = isBusy || Boolean(data.filling) || !readyRows().length;
   setStatus(data.filling ? "A fill is already processing for this preview." : `Reviewing ${data.target.origin}.`);
 }
 
@@ -125,6 +181,7 @@ function createRow(row, profile) {
   const includeLabel = document.createElement("label");
   const include = document.createElement("input");
   include.type = "checkbox";
+  include.className = "include-field";
   include.checked = row.include;
   include.disabled = !row.field.eligible || currentPreview.filling || isBusy;
   include.addEventListener("change", () => sendChange(row.fieldId, { include: include.checked }));
@@ -275,6 +332,11 @@ function enqueueUpdate(fieldId, changes, redraw = false) {
     updateSelectionSummary();
     const valueText = rows.querySelector(`[data-field-id="${CSS.escape(fieldId)}"] .suggested-value`);
     if (valueText) valueText.textContent = response.row.value || "No suggestion";
+    const card = rows.querySelector(`[data-field-id="${CSS.escape(fieldId)}"]`);
+    const include = card?.querySelector(".include-field");
+    if (include) include.checked = response.row.include;
+    const state = card?.querySelector(".match-state");
+    if (state) state.hidden = response.row.status === "matched";
     if (redraw && response.row) renderRow(response.row);
   }).catch((error) => {
     updateError = error;
@@ -301,7 +363,7 @@ function renderOutcomes(outcomes) {
   outcomes.forEach((result) => {
     const sourceRow = currentPreview?.rows.find((row) => row.fieldId === result.fieldId);
     const item = document.createElement("li");
-    item.textContent = `${sourceRow?.field.label || result.fieldId}: ${result.status} — ${result.message}`;
+    item.textContent = `${sourceRow?.field.label || result.fieldLabel || result.fieldId}: ${result.status} — ${result.message}`;
     list.append(item);
     if (result.status === "filled") filled += 1;
   });
@@ -319,17 +381,22 @@ function handleError(response) {
   return false;
 }
 
+function readyRows() {
+  return currentPreview?.rows.filter(row => row.include && row.field?.eligible && row.status === "matched" && row.value && (!row.field.hasValue || row.overwrite)) || [];
+}
 function updateSelectionSummary() {
-  const selected = currentPreview?.rows.filter((row) => row.include).length || 0;
+  const selected = readyRows().length;
   const needsInput = currentPreview?.rows.filter((row) => row.field.eligible && row.status !== "matched").length || 0;
   document.querySelector("#summary").textContent = `${selected} fields ready to fill. ${needsInput ? `${needsInput} fields need your input.` : "Review your details, then confirm."}`;
+  document.querySelector("#approve").disabled = isBusy || Boolean(currentPreview?.filling) || !selected;
   document.querySelector("#approve").textContent = selected ? `Confirm and fill ${selected} field${selected === 1 ? "" : "s"}` : "Confirm and fill";
 }
 
 function setBusy(value) {
   isBusy = value;
   document.querySelector("#scan").disabled = value;
-  document.querySelector("#approve").disabled = value || Boolean(currentPreview?.filling) || !currentPreview?.rows.some(row => row.include);
+  document.querySelector("#fill-profile").disabled = value || Boolean(currentPreview?.filling) || profileSource === "development" || !profileChoices.length;
+  document.querySelector("#approve").disabled = value || Boolean(currentPreview?.filling) || !readyRows().length;
   document.querySelector("#cancel").disabled = value;
   rows.querySelectorAll("input, select, textarea").forEach((control) => {
     control.disabled = value || control.closest(".field-card")?.dataset.eligible !== "true" || Boolean(currentPreview?.filling) || control.dataset.directAnswer === "true";

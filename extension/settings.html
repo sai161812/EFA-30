@@ -29,14 +29,15 @@
       <p id="auth-state" class="muted"></p>
     </section>
     <section aria-labelledby="profiles-heading">
-      <h2 id="profiles-heading">Profiles</h2>
-      <label for="profile-select">Profile used for scans</label>
+      <h2 id="profiles-heading">Profiles for different uses</h2>
+      <p class="muted">Create named profiles such as Personal, Work, College or Travel. Local mode supports more than one in each category. Details are never merged between profiles; the popup lets you choose which one a form uses.</p>
+      <label for="profile-select">Profile to view or edit</label>
       <select id="profile-select"><option value="">Connect to load profiles</option></select>
       <button id="select-profile" class="secondary" type="button">Use selected profile</button>
       <div class="actions">
         <label for="new-profile-type">Create profile</label>
         <select id="new-profile-type">
-          <option value="personal">Personal</option><option value="college">College</option><option value="professional">Professional</option>
+          <option value="personal">Personal / signup</option><option value="college">College / education</option><option value="professional">Professional / work</option>
         </select>
         <input id="new-profile-name" maxlength="120" aria-label="New profile name" placeholder="Profile name">
         <button id="create-profile" class="secondary" type="button">Create</button>
@@ -48,7 +49,7 @@
         <p class="muted">Facts are saved to the profile being edited, in local browser storage or POD-16 according to your selected source. Phone numbers and postal codes remain text. Dates keep their stated precision.</p>
         <p class="notice">Project import from POD-16 is not available. You can add a project snapshot manually only after you have approved its contents.</p>
         <h3>Your contact details</h3>
-        <p class="muted">Enter one default contact identity. All fields are optional; blank fields are not saved. Enter name parts explicitly, and include your phone country code. Address details should be your default contact address. Leave company details blank when they do not apply. Contact messages are written separately for each form.</p>
+        <p class="muted">Enter the contact identity for this profile. All fields are optional; blank fields are not saved. Enter name parts explicitly, and include your phone country code. Address details should be your default contact address. Leave company details blank when they do not apply. Contact messages are written separately for each form.</p>
         <div id="fact-list" class="facts"></div>
         <div class="actions"><button id="add-fact" class="secondary" type="button">Add fact</button><button id="save-profile" type="button">Save profile changes</button><button id="delete-local-profile" class="secondary" type="button" hidden>Delete this local profile</button></div>
       </div>

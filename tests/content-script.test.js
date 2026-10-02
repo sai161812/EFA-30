@@ -380,3 +380,73 @@ test("oversized forms fail closed instead of creating an unbounded preview", asy
   assert.equal(result.type,"pluma/scan-error");
   assert.equal(result.fields,undefined);
 });
+
+
+test("native constraints changing after preview invalidate the old approval", async () => {
+  const field=new FakeInput({name:"email",type:"email",label:"Email"});
+  const harness=await contentHarness([field]);
+  const scan=await harness.request({type:"pluma/scan-page"});
+  field.attributes.pattern=".*@work\\.example";
+  const result=await harness.request({type:"pluma/fill-approved",items:[{fieldId:scan.fields[0].id,value:"a@example.test",overwrite:false,expected:scan.fields[0]}]});
+  assert.equal(result.outcomes[0].status,"skipped");assert.equal(field.value,"");
+});
+
+
+test("postal PIN codes are supported while security and payment PINs remain excluded", async () => {
+  const fields=["PIN code","Pincode","Bank PIN code","Security PIN","PIN"].map(label=>new FakeInput({name:label,label}));
+  const harness=await contentHarness(fields);
+  const scan=await harness.request({type:"pluma/scan-page"});
+  assert.deepEqual(Array.from(scan.fields,field=>field.eligible),[true,true,false,false,false]);
+});
+
+test("navigation from an input handler is not reported as verified success", async () => {
+  const location={href:"https://fixture.example.test/form"};
+  const field=new FakeInput({name:"email",type:"email",label:"Email",controlled:true,onInput(){location.href="https://fixture.example.test/other";}});
+  const harness=await contentHarness([field],{}, {location});
+  const scan=await harness.request({type:"pluma/scan-page"});
+  const result=await harness.request({type:"pluma/fill-approved",items:[{fieldId:scan.fields[0].id,value:"a@example.test",overwrite:false,expected:scan.fields[0]}]});
+  assert.equal(result.outcomes[0].status,"failed");
+});
+
+
+test("normal country lists are supported while oversized controls and metadata are bounded", async () => {
+  const country=new FakeSelect({name:"country",label:"Country",options:Array.from({length:250},(_,index)=>({value:`c${index}`,label:`Country ${index}`,disabled:false}))});
+  const harness=await contentHarness([country]);
+  const scan=await harness.request({type:"pluma/scan-page"});
+  assert.equal(scan.fields[0].eligible,true);assert.equal(scan.fields[0].options.length,250);
+  const result=await harness.request({type:"pluma/fill-approved",items:[{fieldId:scan.fields[0].id,value:"c249",overwrite:false,expected:scan.fields[0]}]});
+  assert.equal(result.outcomes[0].status,"filled");assert.equal(country.value,"c249");
+  country.options.push(...Array.from({length:251},()=>({value:"x",label:"Extra"})));
+  assert.equal((await harness.request({type:"pluma/scan-page"})).fields[0].eligible,false);
+});
+
+test("oversized option and form metadata are excluded without unbounded descriptors", async () => {
+  const select=new FakeSelect({label:"Country",options:[{value:"x".repeat(50000),label:"Huge"}]});
+  const input=new FakeInput({name:"email",label:"Email"});
+  input.form={id:"x".repeat(50000),children:[],getAttribute(){return "";}};
+  const harness=await contentHarness([select,input]);
+  const scan=await harness.request({type:"pluma/scan-page"});
+  assert.ok(scan.fields.every(field=>!field.eligible));
+  assert.equal(scan.fields[0].options[0].value.length,4001);
+  assert.equal(scan.fields[1].formIdentity.id.length,4001);
+});
+
+test("aggregate scan metadata has a hard cap", async () => {
+  const fields=Array.from({length:300},()=>new FakeInput({name:"x".repeat(4000),label:"Email"}));
+  const harness=await contentHarness(fields);
+  assert.equal((await harness.request({type:"pluma/scan-page"})).type,"pluma/scan-error");
+});
+
+
+test("significant whitespace in native constraints and form actions is preserved", async () => {
+  const input=new FakeInput({name:"contact",label:"Contact"});
+  input.attributes.pattern="A  B";
+  input.form={id:"form",children:[],getAttribute(name){return name === "action" ? "/two  spaces" : "";}};
+  const harness=await contentHarness([input]);
+  const scan=await harness.request({type:"pluma/scan-page"});
+  assert.equal(scan.fields[0].nativeConstraints.pattern,"A  B");
+  assert.equal(scan.fields[0].formIdentity.action,"/two  spaces");
+  input.attributes.pattern="A B";
+  const result=await harness.request({type:"pluma/fill-approved",items:[{fieldId:scan.fields[0].id,value:"A B",overwrite:false,expected:scan.fields[0]}]});
+  assert.equal(result.outcomes[0].status,"skipped");assert.equal(input.value,"");
+});
