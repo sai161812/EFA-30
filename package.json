@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node --test",
     "evaluate": "node evaluation/evaluate.mjs",
-    "test:browser": "node scripts/check-browser-fill.mjs"
+    "test:browser": "node scripts/check-browser-fill.mjs",
+    "test:security": "node scripts/check-browser-security.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.63.0"

@@ -17,7 +17,7 @@ The application is a browser extension. Enter reusable contact details in its ow
 - Public forms require HTTPS; loopback HTTP remains available for local testing. HTTPS protects transport but does not prove a site is trustworthy.
 - Pages cannot retrieve profiles, manage facts, or approve fills. Storage is restricted to trusted extension contexts. No all-sites host permission is requested.
 - Existing values require separate overwrite approval. Hidden, disabled, readonly, password, key/token, identity, payment, consent and upload controls are excluded.
-- New or edited profile facts labelled as credentials, payment credentials or government identifiers are rejected. This checks fact metadata, not the meaning of arbitrary values. Previously stored facts are not silently deleted; remove unwanted facts in Settings.
+- New or edited profile facts labelled as credentials, payment credentials or government identifiers are rejected. This checks fact metadata, not the meaning of arbitrary values. Previously stored facts are not silently deleted; remove unwanted facts in Settings. Sensitive facts are excluded from autofill previews and legacy pending previews are invalidated.
 - Saved email facts reject obvious malformed values. Website facts require HTTP/HTTPS links without embedded credentials.
 - Optional API calls use HTTPS except loopback, omit cookies, disable caching and reject redirects. Server-provided error text is not reflected into the UI.
 - `.private/` is excluded from Git. Actual profile data belongs in browser storage, not repository files.
@@ -27,3 +27,5 @@ The application is a browser extension. Enter reusable contact details in its ow
 Local storage provides convenience, not a secure vault. Keep the device and browser profile protected; do not use a shared browser profile for private details. Review the displayed website and values before confirming. The extension cannot control a destination site's retention, third-party scripts, or later use of your information. Sensitive credentials belong in a password manager.
 
 Verification includes automated access-boundary, retention, excluded-field, HTTPS, safe-error and secret-input tests, plus an isolated Edge browser write test. It is not a penetration test or a review of POD-16 or third-party websites.
+
+See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for reproduced findings, browser attack checks and remaining risks. Unencrypted storage remains an explicit user preference.

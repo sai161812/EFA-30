@@ -42,7 +42,12 @@
   }
 
   function scanDocument() {
-    const controls = [...document.querySelectorAll("input, textarea, select")].filter(isVisible);
+    const controls = [];
+    for (const element of document.querySelectorAll("input, textarea, select")) {
+      if (!isVisible(element)) continue;
+      controls.push(element);
+      if (controls.length > 300) throw new Error("Too many visible controls.");
+    }
     const fields = controls.map(describeField);
     const eligible = fields.filter((field) => field.eligible).length;
     return { type: "pluma/scan-result", documentUrl: location.href, fields, summary: { total: fields.length, eligible, blocked: fields.length - eligible, notices: ["Embedded frames, custom dropdowns and shadow DOM are not scanned."] } };
@@ -261,7 +266,9 @@
         element.focus({ preventScroll: true });
         // Focus handlers may change the control; revalidate before writing.
         const focused = describeField(element);
-        if (!element.isConnected || !sameSemantics(item.expected, focused)) {
+        const focusedStructure = scanDocument().fields;
+        if (location.href !== targetUrl || !element.isConnected || !sameSemantics(item.expected, focused) ||
+            focusedStructure.length !== expectedFields.length || focusedStructure.some((field, index) => !sameStructure(expectedFields[index], field))) {
           outcomes.push(outcome(item.fieldId, "skipped", "The field changed on focus. Scan and review again."));
           continue;
         }

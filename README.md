@@ -104,3 +104,5 @@ The browser check uses an isolated temporary extension copy and synthetic local 
 Profile and field comparisons ignore object property order because browser storage may reorder keys. Actual fact changes still invalidate a preview. Focus runs before the native setter and revalidates the target; verification has a timer fallback so suspended animation frames cannot leave filling waiting indefinitely. The confirmation button shows progress and prevents duplicate clicks.
 
 See [PRIVACY.md](PRIVACY.md) for the current data inventory, retention, safeguards and limits.
+
+Run `npm run test:security` for adversarial browser checks with unmodified production security guards and CSP. See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for scope and limits; the functional browser test uses different, explicitly documented instrumentation.

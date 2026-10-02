@@ -359,3 +359,24 @@ test("text controls requesting keys, tokens or Aadhaar are excluded", async () =
   assert.ok(scan.fields.every(field => !field.eligible));
   assert.equal(JSON.stringify(scan).includes("private-value"),false);
 });
+
+
+test("a focus handler navigating to another route cannot receive the approved value", async () => {
+  const location = {href:"https://fixture.example.test/form"};
+  const field = new FakeInput({name:"email",type:"email",label:"Email"});
+  field.focus = () => {location.href="https://fixture.example.test/other-route";};
+  const harness=await contentHarness([field],{}, {location});
+  const scan=await harness.request({type:"pluma/scan-page"});
+  const result=await harness.request({type:"pluma/fill-approved",items:[{fieldId:scan.fields[0].id,value:"approved@example.test",overwrite:false,expected:scan.fields[0]}]});
+  assert.equal(field.value,"");
+  assert.equal(result.outcomes[0].status,"skipped");
+});
+
+
+test("oversized forms fail closed instead of creating an unbounded preview", async () => {
+  const fields=Array.from({length:301},()=>new FakeInput({name:"email",type:"email",label:"Email"}));
+  const harness=await contentHarness(fields);
+  const result=await harness.request({type:"pluma/scan-page"});
+  assert.equal(result.type,"pluma/scan-error");
+  assert.equal(result.fields,undefined);
+});

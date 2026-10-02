@@ -45,9 +45,9 @@ try {
   await fs.writeFile(path.join(extension, "manifest.json"), JSON.stringify(manifest));
   const workerPath = path.join(extension, "extension/service-worker.js");
   const workerSource = await fs.readFile(workerPath, "utf8");
-  const popupGuard = 'sender.url.endsWith("/extension/popup.html") && sender.tab === undefined';
+  const popupGuard = 'sender.url === `${EXTENSION_ORIGIN}extension/popup.html` && sender.tab === undefined';
   assert.ok(workerSource.includes(popupGuard), "Test instrumentation must match the popup guard");
-  await fs.writeFile(workerPath, workerSource.replace(popupGuard, 'sender.url.endsWith("/extension/popup.html")'));
+  await fs.writeFile(workerPath, workerSource.replace(popupGuard, 'sender.url === `${EXTENSION_ORIGIN}extension/popup.html`'));
   const browser = process.env.EFA_BROWSER_PATH || "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
   context = await chromium.launchPersistentContext(path.join(temporary, "profile"), {
     executablePath: browser, headless: true,

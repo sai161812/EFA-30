@@ -645,3 +645,41 @@ test("sensitive facts are rejected without persisting their values", async () =>
   }
   assert.equal(JSON.stringify(runtime.stored).includes("private-value"),false);
 });
+
+
+test("legacy sensitive facts never enter scan previews or pending snapshots", async () => {
+  const runtime=makeRuntime(); await loadWorker(runtime,"legacy-secrets");
+  const id="123e4567-e89b-12d3-a456-426614174000";
+  runtime.stored["local:profileApiSettings"]={mode:"local",selectedProfileId:id};
+  runtime.stored["local:localProfiles"]=[{id,profile_type:"personal",name:"Legacy",version:1,facts:[{key:"apiKey",label:"API key",fact_type:"text",value:"legacy-secret",source:"Legacy",aliases:["email"]}]}];
+  const result=await send(runtime,{type:"pluma/scan-active-tab"});
+  assert.equal(JSON.stringify(result).includes("legacy-secret"),false);
+  assert.equal(JSON.stringify(runtime.stored.pendingPreview).includes("legacy-secret"),false);
+});
+
+test("embedded settings frames cannot read or change stored profiles", async () => {
+  const runtime=makeRuntime(); await loadWorker(runtime,"settings-frame");
+  const result=await send(runtime,{type:"pluma/local-profile-enable"},{...settingsSender,tab:{id:9},frameId:2});
+  assert.equal(result.type,"pluma/workflow-error");
+  assert.equal(runtime.stored["local:profileApiSettings"],undefined);
+});
+
+
+test("stale sensitive previews are invalidated before being restored", async () => {
+  const runtime=makeRuntime();await loadWorker(runtime,"legacy-preview-secret");
+  await send(runtime,{type:"pluma/scan-active-tab"});
+  runtime.stored.pendingPreview.facts.push({key:"password",label:"Password",value:"legacy-secret",aliases:[],type:"text"});
+  const result=await send(runtime,{type:"pluma/get-preview"});
+  assert.equal(result.type,"pluma/workflow-error");
+  assert.equal(JSON.stringify(result).includes("legacy-secret"),false);
+  assert.equal(runtime.stored.pendingPreview,undefined);
+});
+
+test("inactive documents and mismatched UI origins cannot act as Settings", async () => {
+  const runtime=makeRuntime();await loadWorker(runtime,"ui-origin-boundary");
+  for(const patch of [{origin:"https://hostile.example"},{documentLifecycle:"prerender"},{url:"chrome-extension://extension-test/other/extension/settings.html"}]) {
+    const result=await send(runtime,{type:"pluma/local-profile-enable"},{...settingsSender,...patch});
+    assert.equal(result.type,"pluma/workflow-error");
+  }
+  assert.equal(runtime.stored["local:profileApiSettings"],undefined);
+});

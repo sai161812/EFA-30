@@ -40,13 +40,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 function isTrustedPopup(sender) {
-  return sender.id === chrome.runtime.id && typeof sender.url === "string" && sender.url.startsWith(EXTENSION_ORIGIN) &&
-    sender.url.endsWith("/extension/popup.html") && sender.tab === undefined;
+  return sender.id === chrome.runtime.id && sender.url === `${EXTENSION_ORIGIN}extension/popup.html` && sender.tab === undefined && isActiveTopLevel(sender);
 }
 
 function isTrustedSettings(sender) {
-  return sender.id === chrome.runtime.id && typeof sender.url === "string" && sender.url.startsWith(EXTENSION_ORIGIN) &&
-    sender.url.endsWith("/extension/settings.html");
+  return sender.id === chrome.runtime.id && sender.url === `${EXTENSION_ORIGIN}extension/settings.html` && isActiveTopLevel(sender);
+}
+
+function isActiveTopLevel(sender) {
+  return (sender.frameId === undefined || sender.frameId === 0) &&
+    (sender.documentLifecycle === undefined || sender.documentLifecycle === "active") &&
+    (sender.origin === undefined || sender.origin === EXTENSION_ORIGIN.slice(0, -1));
 }
 
 async function dispatchProfileApi(message) {
@@ -217,6 +221,10 @@ function validProfileId(value) {
   return value;
 }
 
+function autofillProfile(profile) {
+  return {...profile, facts: profile.facts.filter(fact => !isSensitiveFact(fact))};
+}
+
 async function getSelectedProfile() {
   const local = await chrome.storage.local.get(API_SETTINGS_KEY);
   const settings = local[API_SETTINGS_KEY];
@@ -224,12 +232,12 @@ async function getSelectedProfile() {
     const saved = await chrome.storage.local.get("localProfiles");
     const raw = (saved.localProfiles || []).find((item) => item.id === settings.selectedProfileId);
     if (!raw) throw new Error("Create and select your local profile in Settings before scanning.");
-    return { ...validateProfile(raw, settings.selectedProfileId), profileSource: "local", profileOrigin: null, profileApiMs: 0 };
+    return { ...autofillProfile(validateProfile(raw, settings.selectedProfileId)), profileSource: "local", profileOrigin: null, profileApiMs: 0 };
   }
   if (!settings?.origin) {
     const dev = await chrome.storage.local.get("developmentProfileEnabled");
     if (dev.developmentProfileEnabled !== true) throw new Error("Select a profile in Settings before scanning. For offline testing, explicitly enable the fictional development profile.");
-    return { ...DEVELOPMENT_PROFILE, profileSource: "development" };
+    return { ...autofillProfile(DEVELOPMENT_PROFILE), profileSource: "development" };
   }
   const session = await chrome.storage.session.get(API_TOKEN_KEY);
   if (!session[API_TOKEN_KEY]) throw new Error("POD-16 requires sign-in after browser restart. Open Settings and authenticate again.");
@@ -237,7 +245,7 @@ async function getSelectedProfile() {
   try {
     const apiStartedAt = performance.now();
     const profile = validateProfile(await fetchProfileApi({ origin: settings.origin, token: session[API_TOKEN_KEY], path: `/${validProfileId(settings.selectedProfileId)}` }), settings.selectedProfileId);
-    return { ...profile, profileSource: "pod16", profileOrigin: settings.origin, profileApiMs: Math.round((performance.now() - apiStartedAt) * 100) / 100 };
+    return { ...autofillProfile(profile), profileSource: "pod16", profileOrigin: settings.origin, profileApiMs: Math.round((performance.now() - apiStartedAt) * 100) / 100 };
   } catch (error) {
     await clearPending();
     if (/session expired|key was rejected/i.test(String(error?.message))) await chrome.storage.session.remove(API_TOKEN_KEY);
@@ -691,6 +699,10 @@ async function loadPending() {
   const record = await chrome.storage.session.get(SESSION_KEY);
   const pending = record[SESSION_KEY];
   if (!pending) return null;
+  if (pending.facts?.some(isSensitiveFact)) {
+    await clearPending(pending.token);
+    throw new Error("This older preview contains a restricted fact. Scan again; credentials are excluded from autofill.");
+  }
   if (pending.filling && activeFillToken !== pending.token) {
     await clearPending(pending.token);
     throw new Error("A fill was interrupted by a worker restart. Some fields may have changed; review the page before rescanning.");
