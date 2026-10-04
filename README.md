@@ -17,12 +17,12 @@ Optional field details: [PROFILE_REFERENCE.md](PROFILE_REFERENCE.md). The sectio
 1. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked**.
-4. Select the repository root folder containing `manifest.json` (`D:\Workspace\DEVEL\EFA-30`).
+4. Select your checkout's repository root folder containing `manifest.json`. Keep this installation folder in place; loading another copy may create a different extension identity and separate profile storage.
 5. Confirm **EFA-30** appears and select its toolbar icon to open the popup.
 
 ## Start POD-16 locally
 
-The POD-16 checkout documents its local API at `http://127.0.0.1:8000`. From `D:\Workspace\DEVEL\POD-16`, start its Docker Compose stack; it applies Alembic migrations before serving. That checkout does not document a production API origin. This extension build requests permission for exactly `http://127.0.0.1:8000/*`.
+The POD-16 checkout documents its local API at `http://127.0.0.1:8000`. From your POD-16 checkout, start its Docker Compose stack with `docker compose up -d --build api`; it applies Alembic migrations before serving. That checkout does not document a production API origin. This extension build requests permission for exactly `http://127.0.0.1:8000/*`.
 
 Create a POD-16 client API key using the bootstrap/admin credential. For fill-only access grant `autofill:profiles:read`. To create and edit approved facts also grant `autofill:profiles:manage`. Do not grant projects, tasks, notes or wildcard access. POD-16 returns the generated key once; enter it in extension Settings. The key stays in trusted extension session storage and must be entered again after browser restart.
 
@@ -32,10 +32,9 @@ POD-16 project import is not available in the inspected backend. Project snapsho
 
 ## Serve and scan the local form fixture
 
-From PowerShell, run in the repository root:
+Open PowerShell in your EFA-30 repository root (the folder containing `manifest.json`), then run:
 
 ```powershell
-Set-Location 'D:\Workspace\DEVEL\EFA-30'
 py -m http.server 8001 --directory fixture
 ```
 
