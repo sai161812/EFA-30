@@ -19,6 +19,10 @@ export async function requestProfileApi({ origin, token, path = "", method = "GE
   const apiOrigin = normalizeApiOrigin(origin);
   if (!token || typeof token !== "string" || token.length > 4096) throw new Error("Sign in again to POD-16 profile access.");
   if (path !== "" && !/^\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) throw new Error("Invalid profile API path.");
+  if (!["GET", "POST", "PATCH"].includes(method) || (method === "GET" && body !== undefined) ||
+      (method === "POST" && path !== "") || (method === "PATCH" && path === "")) {
+    throw new Error("Unsupported profile API operation.");
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {

@@ -156,3 +156,21 @@ test("invalid UTF-8 stops consuming the response stream", async () => {
     assert.equal(cancelled, true);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+
+test("unsupported profile operations are rejected before network access", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; return new Response('{"data":[]}'); };
+  const identity = "/12345678-1234-1234-1234-123456789abc";
+  try {
+    for (const options of [{method:"DELETE",path:identity},{method:"TRACE"},{method:"GET",body:{}},
+        {method:"POST",path:identity,body:{}},{method:"PATCH",body:{}}]) {
+      await assert.rejects(requestProfileApi({origin:"https://pod.example.test",token:"synthetic-token",...options}), /Unsupported profile API operation/);
+    }
+    assert.equal(requests,0);
+    await requestProfileApi({origin:"https://pod.example.test",token:"synthetic-token",method:"POST",body:{}});
+    await requestProfileApi({origin:"https://pod.example.test",token:"synthetic-token",method:"PATCH",path:identity,body:{}});
+    assert.equal(requests,2);
+  } finally { globalThis.fetch = originalFetch; }
+});
