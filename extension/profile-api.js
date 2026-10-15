@@ -18,7 +18,7 @@ export function normalizeApiOrigin(input) {
 export async function requestProfileApi({ origin, token, path = "", method = "GET", body }) {
   const apiOrigin = normalizeApiOrigin(origin);
   if (!token || typeof token !== "string" || token.length > 4096) throw new Error("Sign in again to POD-16 profile access.");
-  if (path !== "" && !/^\/[0-9a-f-]{36}$/i.test(path)) throw new Error("Invalid profile API path.");
+  if (path !== "" && !/^\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) throw new Error("Invalid profile API path.");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {

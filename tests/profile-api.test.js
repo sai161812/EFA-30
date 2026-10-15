@@ -106,3 +106,18 @@ test("authentication expiry is classified without parsing or waiting for an erro
     await assert.rejects(requestProfileApi({ origin: "https://pod.example.test", token: "synthetic-token" }), /session expired/);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+
+test("profile API rejects malformed UUID paths before making a request", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; return new Response('{"data":[]}'); };
+  try {
+    for (const path of ["/" + "-".repeat(36), "/" + "a".repeat(36), "/12345678-1234-1234-1234-123456789abz"]) {
+      await assert.rejects(requestProfileApi({ origin:"https://pod.example.test", token:"synthetic-token", path }), /Invalid profile API path/);
+    }
+    assert.equal(requests, 0);
+    await requestProfileApi({origin:"https://pod.example.test",token:"synthetic-token",path:"/12345678-1234-1234-1234-123456789abc"});
+    assert.equal(requests, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
