@@ -59,7 +59,7 @@ export async function requestProfileApi({ origin, token, path = "", method = "GE
 async function readBoundedJson(response) {
   const tooLarge = () => new Error("POD-16 response exceeds the supported 4 MiB limit.");
   if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
-    await response.body?.cancel();
+    void response.body?.cancel().catch(() => {});
     throw tooLarge();
   }
   if (!response.body) throw new Error("Empty API response.");
@@ -72,11 +72,15 @@ async function readBoundedJson(response) {
       const {done,value} = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > MAX_RESPONSE_BYTES) { await reader.cancel(); throw tooLarge(); }
+      if (bytes > MAX_RESPONSE_BYTES) throw tooLarge();
       text += decoder.decode(value, {stream:true});
     }
     text += decoder.decode();
     return JSON.parse(text);
+  } catch (error) {
+    // Cancellation is best effort: an untrusted stream may never settle it.
+    void reader.cancel().catch(() => {});
+    throw error;
   } finally { reader.releaseLock(); }
 }
 

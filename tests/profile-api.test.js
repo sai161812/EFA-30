@@ -121,3 +121,38 @@ test("profile API rejects malformed UUID paths before making a request", async (
     assert.equal(requests, 1);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+
+test("oversized responses fail promptly even if stream cancellation never settles", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const headers of [{"content-length":"4194305"}, {}]) {
+      let cancelled = false;
+      globalThis.fetch = async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array(4194305)); },
+        cancel() { cancelled = true; return new Promise(() => {}); }
+      }), {headers});
+      let timer;
+      try {
+        await Promise.race([
+          assert.rejects(requestProfileApi({origin:"https://pod.example.test",token:"synthetic-token"}), /4 MiB limit/),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Cancellation blocked response classification")), 1000); })
+        ]);
+      } finally { clearTimeout(timer); }
+      assert.equal(cancelled, true);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("invalid UTF-8 stops consuming the response stream", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = false;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array([0xff])); },
+    cancel() { cancelled = true; }
+  }));
+  try {
+    await assert.rejects(requestProfileApi({origin:"https://pod.example.test",token:"synthetic-token"}), /unreadable response/);
+    assert.equal(cancelled, true);
+  } finally { globalThis.fetch = originalFetch; }
+});
